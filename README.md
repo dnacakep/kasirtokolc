@@ -26,9 +26,8 @@ Aplikasi kasir ringan untuk minimarket pribadi. Dibuat tanpa framework agar seti
 
 ## Menjalankan Secara Singkat
 1. Siapkan web server + PHP + MySQL (contoh: XAMPP/LAMPP) di jaringan lokal.
-2. Import/siapkan database sesuai skema di folder `setup/` (lihat `setup/schema.php`).
-3. Atur kredensial DB di `config/app_config.php` atau variabel lingkungan yang digunakan.
-4. Akses aplikasi lewat browser di jaringan lokal.
+2. Langsung buka dan inisiasi pengaturan awal.
+3. Gunakan HTTPS agar bisa mengakses kamera. kamu harus mengubah settingan XAMPP/LAMPP jika ingin menggunakan fitur scan barcode barang.
 
 ## Donasi
 Jika proyek ini membantu, silakan dukung lewat QR berikut:
