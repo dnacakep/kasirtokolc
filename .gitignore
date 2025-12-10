@@ -1,0 +1,5 @@
+config/local_config.php
+storage/logs/
+storage/products/
+.env
+node_modules/

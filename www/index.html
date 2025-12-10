@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Kasir Toko</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script src="https://cdn.jsdelivr.net/npm/@capacitor/core@5.0.0/dist/capacitor.js"></script>
+    <script src="js/config.js"></script>
+    <style>
+        body { 
+            margin: 0; 
+            padding: 20px; 
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #000000 0%, #1e40af 100%);
+            color: #fff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            text-align: center;
+        }
+        .container {
+            max-width: 400px;
+            padding: 30px;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(30, 64, 175, 0.3);
+        }
+        .loader {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid #1e40af;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        a {
+            color: #fff;
+            text-decoration: none;
+            padding: 10px 20px;
+            border: 1px solid #fff;
+            border-radius: 5px;
+            margin-top: 15px;
+            display: inline-block;
+        }
+        a:hover {
+            background: #fff;
+            color: #000;
+        }
+    </style>
+</head>
+<body>
+    <script src="https://cdn.jsdelivr.net/npm/@capacitor/core@5.0.0/dist/capacitor.js"></script>
+    <script src="js/config.js"></script>
+    <div class="container">
+        <h1>🛒 Kasir Toko</h1>
+        <p>Membuka dashboard di browser...</p>
+        <p>Server: <strong>https://192.168.11.45:2020</strong></p>
+        <div style="margin: 20px 0;">
+            <div class="loader"></div>
+            <p style="color: #ffeb3b;">Tunggu sebentar...</p>
+        </div>
+        <p><strong>Membuka browser otomatis...</strong></p>
+        <p><a href="https://192.168.11.45:2020/index.php?page=dashboard" class="redirect-btn">Buka Dashboard</a></p>
+        <p><small>Otomatis dalam 3 detik</small></p>
+    </div>
+
+    <script>
+        // Auto redirect setelah 3 detik
+        setTimeout(function() {
+            window.location.href = 'https://192.168.11.45:2020/index.php?page=dashboard';
+        }, 3000);
+        
+        // Fallback ke HTTP setelah 8 detik
+        setTimeout(function() {
+            window.location.href = 'http://192.168.11.45:2020/index.php?page=dashboard';
+        }, 8000);
+    </script>
+</body>
+</html>
