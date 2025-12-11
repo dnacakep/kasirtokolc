@@ -1,6 +1,8 @@
 # kasirtokolc
 
-Aplikasi kasir ringan untuk minimarket pribadi. Dibuat tanpa framework agar setipis mungkin, berjalan di jaringan lokal (tidak diekspos ke internet), sehingga tidak ada lapisan keamanan tambahan yang rumit.
+Aplikasi kasir ringan untuk minimarket pribadi. Dibuat tanpa framework agar setipis mungkin, berjalan di jaringan lokal (tidak diekspos ke internet), sehingga tidak ada lapisan keamanan tambahan yang rumit. Saya menggunakan ini pada minimarket pribadi. Jadi fitur, keamanan, dan pengalaman pengguna disesuaikan dengan kebutuhan saya. Saya memasangnya di AApanel STB HG mmc 32gb. Tersambung ke router wifi, untuk mengaksesnya menggunakan browser yang tersambung dengan jaringan lokal. tutorial aapanel ada di yt nanangmrk. Tambahan aku mengaktifkan SSL pada aapanel agar bisa mengakses kamera android untuk scan barcode. Cetak printer thermal dengan bantuan apk yang diinstall manual (belum saya upload karena file mentahnya ilang. tinggal apk saja).
+
+Proyek ini masih tahap pengembangan karena saya menggunakannya untuk minimarket pribadi. Jika ada bug atau kurang fitur, saya akan update sekacara berkala sesuai yang saya temukan. Saya menerima kritik dan saran. Terutama saran di style (emot nangis) karena bukan bidang saya. UI masih error terus dan belum menemukan interface yang sesuai dengan kehendak saya.
 
 ## Latar Belakang
 - Butuh sistem manajemen minimarket sederhana tanpa biaya lisensi/berlangganan.
