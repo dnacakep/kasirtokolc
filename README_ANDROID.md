@@ -4,7 +4,7 @@ Aplikasi Kasir (Point of Sale) berbasis Android yang dirancang untuk kecepatan, 
 
 ---
 
-## 🚀 Fitur Utama (Migration Roadmap)
+## 🚀 Fitur Unggulan
 
 ### 1. 💵 Transaksi Cepat & Pintar
 - **Scan Barcode:** Mendukung penggunaan kamera HP atau Barcode Scanner Bluetooth/USB.
@@ -87,4 +87,4 @@ app/
 Proyek ini bersifat **Open Source**. Kontribusi dalam bentuk *Bug Report* atau *Pull Request* sangat diapresiasi.
 
 **Dikembangkan oleh:** Muhammad Luthfianto (Limitless Design Studio)
-**Kontak:** [support@limitlessds.com](mailto:support@limitlessds.com)
+**Kontak:** [luthfi@limitlessds.com](mailto:support@limitlessds.com)

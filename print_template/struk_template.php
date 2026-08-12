@@ -154,8 +154,15 @@ function printViaApp() {
         for (let i = 0; i < rows.length; i++) {
             const row = rows[i];
             if (row.children.length === 1 && row.children[0].hasAttribute('colspan')) {
-                const itemName = row.children[0].innerText.trim();
+                const itemCell = row.children[0];
+                const itemName = itemCell.firstChild.textContent.trim();
                 receiptText += `${itemName}\n`;
+
+                // Cek detail digital (di dalam <small>)
+                const digitalDetail = itemCell.querySelector('small');
+                if (digitalDetail) {
+                    receiptText += `  ${digitalDetail.innerText.trim()}\n`;
+                }
 
                 if (i + 1 < rows.length) {
                     const nextRow = rows[i + 1];
@@ -283,7 +290,12 @@ function triggerPrintViaApp() {
     <table>
         <?php foreach ($items as $item): ?>
             <tr>
-                <td colspan="2"><?= sanitize($item['name']) ?></td>
+                <td colspan="2">
+                    <?= sanitize($item['name']) ?>
+                    <?php if (!empty($item['digital_details'])): ?>
+                        <br><small><?= sanitize($item['digital_details']) ?></small>
+                    <?php endif; ?>
+                </td>
             </tr>
             <tr>
                 <td><?= $item['quantity'] ?> x <?= format_rupiah($item['price']) ?></td>

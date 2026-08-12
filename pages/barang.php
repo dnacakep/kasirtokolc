@@ -11,41 +11,20 @@ $pdo = get_db_connection();
 
 $categories = $pdo->query("SELECT * FROM categories ORDER BY name ASC")->fetchAll();
 $suppliers = $pdo->query("SELECT * FROM suppliers ORDER BY name ASC")->fetchAll();
-$conversionProducts = $pdo->query("SELECT id, name FROM products WHERE is_active = 1 ORDER BY name ASC")->fetchAll();
 
 $editId = isset($_GET['edit']) ? (int) $_GET['edit'] : null;
 $editProduct = null;
-$conversionConfig = [
-    'parent_product_id' => null,
-    'child_quantity' => null,
-    'auto_breakdown' => 1,
-];
+$tieredPrices = [];
 
 if ($editId) {
     $stmt = $pdo->prepare("SELECT * FROM products WHERE id = :id LIMIT 1");
     $stmt->execute([':id' => $editId]);
     $editProduct = $stmt->fetch();
-
-    if ($editProduct) {
-        $convStmt = $pdo->prepare("
-            SELECT parent_product_id, child_quantity, auto_breakdown
-            FROM product_conversions
-            WHERE child_product_id = :id
-            LIMIT 1
-        ");
-        $convStmt->execute([':id' => $editProduct['id']]);
-        $conversionRow = $convStmt->fetch();
-        if ($conversionRow) {
-            $conversionConfig = [
-                'parent_product_id' => (int) $conversionRow['parent_product_id'],
-                'child_quantity' => (float) $conversionRow['child_quantity'],
-                'auto_breakdown' => (int) $conversionRow['auto_breakdown'],
-            ];
-        }
-    }
 }
 
-$conversionEnabled = $conversionConfig['parent_product_id'] !== null;
+if ($editProduct) {
+    $tieredPrices = fetch_tiered_prices($pdo, (int) $editProduct['id']);
+}
 
 $nextBatchCode = null;
 if (!$editProduct) {
@@ -146,60 +125,39 @@ if (!$editProduct) {
         </div>
 
         <fieldset class="form-fieldset">
-            <legend>Konversi Satuan Otomatis</legend>
-            <div class="form-group checkbox-group">
-                <label class="checkbox">
-                    <input
-                        type="checkbox"
-                        id="conversion_enabled"
-                        name="conversion_enabled"
-                        value="1"
-                        <?= $conversionEnabled ? 'checked' : '' ?>>
-                    <span>Aktifkan konversi stok dari barang lain</span>
-                </label>
-            </div>
-            <div id="conversion_fields" style="<?= $conversionEnabled ? '' : 'display:none;' ?>">
-                <div class="grid-3">
-                    <div class="form-group">
-                        <label for="conversion_parent_id">Barang Sumber (Renteng)</label>
-                        <select id="conversion_parent_id" name="conversion_parent_id" <?= $conversionEnabled ? '' : 'disabled' ?>>
-                            <option value="">-- Pilih Barang --</option>
-                            <?php foreach ($conversionProducts as $productOption): ?>
-                                <?php if ($editProduct && $productOption['id'] == $editProduct['id']) continue; ?>
-                                <option value="<?= (int) $productOption['id'] ?>" <?= ($conversionConfig['parent_product_id'] ?? null) == $productOption['id'] ? 'selected' : '' ?>>
-                                    <?= sanitize($productOption['name']) ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="conversion_child_qty">Jumlah Satuan per Renteng</label>
-                        <input
-                            type="number"
-                            id="conversion_child_qty"
-                            name="conversion_child_qty"
-                            min="0"
-                            step="1"
-                            value="<?= sanitize(isset($conversionConfig['child_quantity']) ? (string) $conversionConfig['child_quantity'] : '') ?>"
-                            placeholder="contoh: 6"
-                            <?= $conversionEnabled ? '' : 'disabled' ?>>
-                    </div>
-                    <div class="form-group checkbox-group">
-                        <label class="checkbox">
-                            <input
-                                type="checkbox"
-                                id="conversion_auto_break"
-                                name="conversion_auto_break"
-                                value="1"
-                                <?= ($conversionConfig['auto_breakdown'] ?? 1) ? 'checked' : '' ?>
-                                <?= $conversionEnabled ? '' : 'disabled' ?>>
-                            <span>Otomatis bongkar stok renteng saat stok satuan habis</span>
-                        </label>
-                    </div>
-                </div>
-                <p class="muted">
-                    Atur jika barang ini dijual satuan tetapi stoknya berasal dari paket/bendel lain. Sistem akan mengurangi stok renteng dan menambah stok satuan secara otomatis sesuai jumlah konversi.
-                </p>
+            <legend>Harga Grosir (Paket / Karton)</legend>
+            <p class="muted">
+                Opsional. Atur harga paket, misalnya 1 karton isi 10 pcs seharga Rp 9.500.
+                Saat transaksi qty melewati kelipatan paket, total dihitung: (jumlah paket x harga paket) + (sisa pcs x harga satuan).
+            </p>
+
+            <table class="table table-compact" id="tiered-price-table">
+                <thead>
+                <tr>
+                    <th>Qty per Paket</th>
+                    <th>Harga Paket</th>
+                    <th></th>
+                </tr>
+                </thead>
+                <tbody id="tiered-price-body">
+                <?php if (!$tieredPrices): ?>
+                    <tr class="tier-empty-row">
+                        <td colspan="3" class="muted" style="text-align:center;">Belum ada harga grosir.</td>
+                    </tr>
+                <?php else: ?>
+                    <?php foreach ($tieredPrices as $tier): ?>
+                        <tr class="tier-row">
+                            <td><input type="number" name="tier_min_qty[]" min="2" step="1" value="<?= (int) ($tier['min_qty'] ?? 0) ?>" required></td>
+                            <td><input type="number" name="tier_price[]" min="0" step="0.01" value="<?= sanitize((string) ($tier['price'] ?? 0)) ?>" required></td>
+                            <td><button type="button" class="button secondary small tier-remove">Hapus</button></td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+                </tbody>
+            </table>
+
+            <div style="margin-top:0.75rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
+                <button type="button" class="button secondary small" id="tier-add">Tambah Harga Grosir</button>
             </div>
         </fieldset>
 
@@ -256,8 +214,6 @@ if (!$editProduct) {
 <script>
     (function() {
         const form = document.getElementById('product-form');
-        const conversionToggle = document.getElementById('conversion_enabled');
-        const conversionFields = document.getElementById('conversion_fields');
         const SELL_PRICE_PERCENT_LIMIT = 0.10;
         const SELL_PRICE_ABSOLUTE_LIMIT = 500;
         const SELL_PRICE_ROUNDING = 100;
@@ -350,6 +306,62 @@ if (!$editProduct) {
         }
 
         setupSellPriceSuggestion();
+
+        // Tiered pricing UI
+        const tierAddBtn = document.getElementById('tier-add');
+        const tierBody = document.getElementById('tiered-price-body');
+
+        const ensureTierEmptyRow = () => {
+            if (!tierBody) {
+                return;
+            }
+            const hasRows = Boolean(tierBody.querySelector('.tier-row'));
+            const emptyRow = tierBody.querySelector('.tier-empty-row');
+            if (!hasRows && !emptyRow) {
+                const tr = document.createElement('tr');
+                tr.className = 'tier-empty-row';
+                tr.innerHTML = '<td colspan="3" class="muted" style="text-align:center;">Belum ada harga grosir.</td>';
+                tierBody.appendChild(tr);
+            }
+            if (hasRows && emptyRow) {
+                emptyRow.remove();
+            }
+        };
+
+        const bindTierRemove = (row) => {
+            const btn = row.querySelector('.tier-remove');
+            if (!btn) {
+                return;
+            }
+            btn.addEventListener('click', () => {
+                row.remove();
+                ensureTierEmptyRow();
+            });
+        };
+
+        if (tierBody) {
+            tierBody.querySelectorAll('.tier-row').forEach(bindTierRemove);
+            ensureTierEmptyRow();
+        }
+
+        if (tierAddBtn && tierBody) {
+            tierAddBtn.addEventListener('click', () => {
+                const emptyRow = tierBody.querySelector('.tier-empty-row');
+                if (emptyRow) {
+                    emptyRow.remove();
+                }
+
+                const tr = document.createElement('tr');
+                tr.className = 'tier-row';
+                tr.innerHTML = `
+                    <td><input type="number" name="tier_min_qty[]" min="2" step="1" value="10" required></td>
+                    <td><input type="number" name="tier_price[]" min="0" step="0.01" value="" required></td>
+                    <td><button type="button" class="button secondary small tier-remove">Hapus</button></td>
+                `;
+                tierBody.appendChild(tr);
+                bindTierRemove(tr);
+            });
+        }
 
         const barcodeInput = document.getElementById('barcode');
         let barcodeCheckTimeout;
@@ -537,18 +549,6 @@ if (!$editProduct) {
             event.preventDefault();
             expiryInput.reportValidity();
         });
-        if (conversionToggle && conversionFields) {
-            const toggleConversionFields = () => {
-                const enabled = conversionToggle.checked;
-                conversionFields.style.display = enabled ? '' : 'none';
-                conversionFields.querySelectorAll('select, input').forEach((el) => {
-                    el.disabled = !enabled;
-                });
-            };
-
-            conversionToggle.addEventListener('change', toggleConversionFields);
-            toggleConversionFields();
-        }
     })();
 </script>
 

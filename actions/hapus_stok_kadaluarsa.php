@@ -52,7 +52,7 @@ try {
         throw new Exception('Batch tidak ditemukan.');
     }
 
-    $currentStock = (int) $batch['stock_remaining'];
+    $currentStock = (float) $batch['stock_remaining'];
 
     if ($currentStock <= 0) {
         throw new Exception('Stok batch ini sudah kosong.');

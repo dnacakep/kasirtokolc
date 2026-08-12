@@ -1,11 +1,5 @@
 <?php
 
-require_once __DIR__ . '/../config/setup_state.php';
-if (setup_requires_wizard() && !setup_is_setup_request()) {
-    header('Location: ' . setup_build_url());
-    exit;
-}
-
 require_once __DIR__ . '/../config/auth.php';
 require_once __DIR__ . '/../includes/fungsi.php';
 
@@ -49,7 +43,7 @@ $flash = consume_flash_message();
             <input type="password" id="password" name="password" required>
         </div>
         <div class="form-group-inline">
-            <input type="checkbox" id="remember_me" name="remember_me" value="1">
+            <input type="checkbox" id="remember_me" name="remember_me" value="1" checked>
             <label for="remember_me">Ingat Saya</label>
         </div>
         <input type="hidden" name="csrf_token" value="<?= sanitize($_SESSION['csrf_token']) ?>">

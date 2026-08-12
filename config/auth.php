@@ -3,8 +3,6 @@
 require_once __DIR__ . '/app_config.php';
 require_once __DIR__ . '/db.php';
 
-setup_redirect_if_needed();
-
 if (session_status() !== PHP_SESSION_ACTIVE) {
     session_set_cookie_params([
         'httponly' => true,

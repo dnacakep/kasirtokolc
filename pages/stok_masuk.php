@@ -162,6 +162,34 @@ if (!$nextBatchCode) {
             <label for="received_at">Tanggal Masuk</label>
             <input type="datetime-local" id="received_at" name="received_at" value="<?= date('Y-m-d\TH:i') ?>">
         </div>
+
+        <fieldset class="form-fieldset">
+            <legend>Harga Grosir (Paket / Karton)</legend>
+            <p class="muted">
+                Opsional. Atur harga paket, misalnya 1 karton isi 10 pcs seharga Rp 9.500.
+                Saat transaksi qty melewati kelipatan paket, total dihitung: (jumlah paket x harga paket) + (sisa pcs x harga satuan).
+            </p>
+
+            <table class="table table-compact" id="tiered-price-table">
+                <thead>
+                <tr>
+                    <th>Qty per Paket</th>
+                    <th>Harga Paket</th>
+                    <th></th>
+                </tr>
+                </thead>
+                <tbody id="tiered-price-body">
+                <tr class="tier-empty-row">
+                    <td colspan="3" class="muted" style="text-align:center;">Belum ada harga grosir.</td>
+                </tr>
+                </tbody>
+            </table>
+
+            <div style="margin-top:0.75rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
+                <button type="button" class="button secondary small" id="tier-add">Tambah Harga Grosir</button>
+            </div>
+        </fieldset>
+
         <button class="button" type="submit">Simpan Batch</button>
     </form>
 </section>
@@ -684,5 +712,55 @@ if (!$nextBatchCode) {
                 handleBarcode(event.detail.value);
             }
         });
+
+        // Tiered pricing UI (Harga Grosir)
+        const tierAddBtn = document.getElementById('tier-add');
+        const tierBody = document.getElementById('tiered-price-body');
+
+        const ensureTierEmptyRow = () => {
+            if (!tierBody) return;
+            const hasRows = Boolean(tierBody.querySelector('.tier-row'));
+            const emptyRow = tierBody.querySelector('.tier-empty-row');
+            if (!hasRows && !emptyRow) {
+                const tr = document.createElement('tr');
+                tr.className = 'tier-empty-row';
+                tr.innerHTML = '<td colspan="3" class="muted" style="text-align:center;">Belum ada harga grosir.</td>';
+                tierBody.appendChild(tr);
+            }
+            if (hasRows && emptyRow) {
+                emptyRow.remove();
+            }
+        };
+
+        const bindTierRemove = (row) => {
+            const btn = row.querySelector('.tier-remove');
+            if (!btn) return;
+            btn.addEventListener('click', () => {
+                row.remove();
+                ensureTierEmptyRow();
+            });
+        };
+
+        if (tierBody) {
+            tierBody.querySelectorAll('.tier-row').forEach(bindTierRemove);
+            ensureTierEmptyRow();
+        }
+
+        if (tierAddBtn && tierBody) {
+            tierAddBtn.addEventListener('click', () => {
+                const emptyRow = tierBody.querySelector('.tier-empty-row');
+                if (emptyRow) emptyRow.remove();
+
+                const tr = document.createElement('tr');
+                tr.className = 'tier-row';
+                tr.innerHTML = `
+                    <td><input type="number" name="tier_min_qty[]" min="2" step="1" value="10" required></td>
+                    <td><input type="number" name="tier_price[]" min="0" step="0.01" value="" required></td>
+                    <td><button type="button" class="button secondary small tier-remove">Hapus</button></td>
+                `;
+                tierBody.appendChild(tr);
+                bindTierRemove(tr);
+            });
+        }
     })();
 </script>

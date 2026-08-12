@@ -2,8 +2,8 @@
 
 require_once __DIR__ . '/../config/auth.php';
 require_once __DIR__ . '/../includes/fungsi.php';
-require_once __DIR__ . '/../includes/stock_utils.php';
 require_once __DIR__ . '/../includes/member_debt.php';
+require_once __DIR__ . '/../includes/integrity_guard.php';
 
 require_role(ROLE_KASIR);
 guard_post();
@@ -70,25 +70,99 @@ $ensurePaymentEnum = static function (PDO $pdo): void {
 $ensurePaymentEnum($pdo);
 $user = current_user();
 
+// Debug: log received data
+error_log("DEBUG: product_id count = " . count($_POST['product_id'] ?? []));
+error_log("DEBUG: is_digital_item = " . print_r($_POST['is_digital_item'] ?? [], true));
+error_log("DEBUG: digital_type_item = " . print_r($_POST['digital_type_item'] ?? [], true));
+
 $productIds = $_POST['product_id'] ?? [];
 $quantities = $_POST['quantity'] ?? [];
 $prices = $_POST['price'] ?? [];
 $discounts = $_POST['discount'] ?? [];
 
-$items = [];
-for ($i = 0; $i < count($productIds); $i++) {
-    $productId = (int) ($productIds[$i] ?? 0);
-    $quantity = (float) ($quantities[$i] ?? 0);
-    $price = (float) ($prices[$i] ?? 0);
-    $discount = (float) ($discounts[$i] ?? 0);
+// Row-based digital data
+$isDigitalItems = $_POST['is_digital_item'] ?? [];
+$digitalTypes = $_POST['digital_type_item'] ?? [];
+$digitalTujuans = $_POST['digital_tujuan_item'] ?? [];
+$digitalModals = $_POST['digital_modal_item'] ?? [];
+$digitalLayanans = $_POST['digital_layanan_item'] ?? [];
 
-    if ($productId && $quantity > 0 && $price >= 0) {
+$parseCurrency = function($val) {
+    if (is_numeric($val)) return (float) $val;
+    return (float) preg_replace('/[^\d]/', '', (string)$val);
+};
+
+$items = [];
+$hasAnyDigital = false;
+
+$digitalLabels = [
+    'dana' => 'Top Up DANA',
+    'ovo' => 'Top Up OVO',
+    'gopay' => 'Top Up GoPay',
+    'shopeepay' => 'Top Up ShopeePay',
+    'linkaja' => 'Top Up LinkAja',
+    'imax' => 'Top Up i.saku / Maxim',
+    'transfer_bca' => 'Transfer BCA',
+    'transfer_bni' => 'Transfer BNI',
+    'transfer_mandiri' => 'Transfer Mandiri',
+    'transfer_bri' => 'Transfer BRI',
+    'transfer_btpn' => 'Transfer BTPN / Jenius',
+    'transfer_cimb' => 'Transfer CIMB Niaga',
+    'transfer_permata' => 'Transfer Permata',
+    'transfer_danamon' => 'Transfer Danamon',
+    'transfer_ocbc' => 'Transfer OCBC NISP',
+    'transfer_banklain' => 'Transfer Bank Lain',
+    'pulsa' => 'Pulsa Elektrik',
+    'token_listrik' => 'Token Listrik',
+    'paket_data' => 'Paket Data',
+    'jasa_antar' => 'Jasa Antar',
+    'jasa_cetak' => 'Jasa Cetak',
+    'jasa_lain' => 'Jasa Lainnya',
+];
+
+for ($i = 0; $i < count($productIds); $i++) {
+    $isDigital = (isset($isDigitalItems[$i]) && $isDigitalItems[$i] === '1');
+    $quantity = (float) $parseCurrency($quantities[$i] ?? 0);
+    $price = (float) $parseCurrency($prices[$i] ?? 0);
+    $discount = (float) $parseCurrency($discounts[$i] ?? 0);
+
+    if ($isDigital) {
+        $hasAnyDigital = true;
+        $type = $digitalTypes[$i] ?? '';
+        $tujuan = trim($digitalTujuans[$i] ?? '');
+        $modal = (float) ($digitalModals[$i] ?? 0);
+        $layanan = trim($digitalLayanans[$i] ?? '');
+
+        $productName = $digitalLabels[$type] ?? ucfirst(str_replace('_', ' ', $type));
+        if ($type === 'transfer_banklain' && $layanan) {
+            $productName = 'Transfer ' . $layanan;
+        } elseif ($layanan) {
+            $productName .= ' - ' . $layanan;
+        }
+
         $items[] = [
-            'product_id' => $productId,
-            'quantity' => $quantity,
+            'product_id' => 0,
+            'is_digital' => true,
+            'digital_type' => $type,
+            'digital_tujuan' => $tujuan,
+            'digital_modal' => $modal,
+            'digital_layanan' => $layanan,
+            'name' => $productName,
+            'quantity' => $quantity ?: 1,
             'price' => $price,
             'discount' => max(0, $discount),
         ];
+    } else {
+        $productId = (int) ($productIds[$i] ?? 0);
+        if ($productId && $quantity > 0 && $price >= 0) {
+            $items[] = [
+                'product_id' => $productId,
+                'is_digital' => false,
+                'quantity' => $quantity,
+                'price' => $price,
+                'discount' => max(0, $discount),
+            ];
+        }
     }
 }
 
@@ -102,9 +176,31 @@ $validPaymentMethods = ['cash', 'debit', 'qris', 'hutang'];
 if (!in_array($paymentMethod, $validPaymentMethods, true)) {
     $paymentMethod = 'cash';
 }
-$pointsUsed = max(0, (int) ($_POST['points_used'] ?? 0));
-$cashPaid = (float) ($_POST['cash_paid'] ?? 0);
+$pointsUsed = max(0, (int) $parseCurrency($_POST['points_used'] ?? 0));
+$cashPaid = $parseCurrency($_POST['cash_paid'] ?? 0);
 $notes = trim($_POST['notes'] ?? '');
+
+// Add digital transaction info to notes
+foreach ($items as $item) {
+    if (!empty($item['is_digital'])) {
+        $digitalNotes = "📱 " . $item['name'] . " -> " . ($item['digital_tujuan'] ?? '');
+        if (!empty($item['digital_modal']) && $item['digital_modal'] > 0) {
+            $digitalNotes .= " | 💰 Modal: Rp" . number_format($item['digital_modal'], 0, ',', '.');
+        }
+        $notes = $notes ? $notes . "\n" . $digitalNotes : $digitalNotes;
+    }
+}
+
+// Ensure product_name column exists in sale_items for digital items/history
+// Also ensure product_id and batch_id are nullable for digital items
+try {
+    $pdo->exec("ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS product_name VARCHAR(255) NULL AFTER product_id");
+    $pdo->exec("ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS digital_details TEXT NULL AFTER product_name");
+    $pdo->exec("ALTER TABLE sale_items MODIFY COLUMN product_id INT NULL");
+    $pdo->exec("ALTER TABLE sale_items MODIFY COLUMN batch_id INT NULL");
+} catch (Throwable $e) {
+    // Ignore if already exists or other error
+}
 
 try {
     $pdo->beginTransaction();
@@ -115,28 +211,66 @@ try {
     $pointsEarned = 0;
 
     $productCache = [];
+    $tierCache = [];
 
     foreach ($items as &$item) {
-        if (!isset($productCache[$item['product_id']])) {
-            $stmt = $pdo->prepare("SELECT id, name, points_reward FROM products WHERE id = :id LIMIT 1");
-            $stmt->execute([':id' => $item['product_id']]);
-            $product = $stmt->fetch();
-            if (!$product) {
-                throw new RuntimeException('Produk tidak ditemukan.');
+        if (!empty($item['is_digital'])) {
+            $lineTotal = $item['quantity'] * $item['price'];
+            $lineDiscount = min($item['discount'], $lineTotal);
+            $lineNet = $lineTotal - $lineDiscount;
+
+            $subtotal += $lineNet;
+            $totalDiscount += $lineDiscount;
+            $totalItems += $item['quantity'];
+            $item['net_total'] = $lineNet;
+        } else {
+            if (!isset($productCache[$item['product_id']])) {
+                $stmt = $pdo->prepare("
+                    SELECT p.id, p.name, p.points_reward,
+                           COALESCE(
+                               (SELECT b.sell_price
+                                FROM product_batches b
+                                WHERE b.product_id = p.id
+                                  AND b.stock_remaining > 0
+                                  AND (b.expiry_date IS NULL OR b.expiry_date >= CURDATE())
+                                ORDER BY b.received_at ASC, b.id ASC
+                                LIMIT 1),
+                               0
+                           ) AS base_price
+                    FROM products p
+                    WHERE p.id = :id
+                    LIMIT 1
+                ");
+                $stmt->execute([':id' => $item['product_id']]);
+                $product = $stmt->fetch();
+                if (!$product) {
+                    throw new RuntimeException('Produk tidak ditemukan.');
+                }
+                $productCache[$item['product_id']] = $product;
             }
-            $productCache[$item['product_id']] = $product;
+
+            $productIdInt = (int) $item['product_id'];
+            if (!isset($tierCache[$productIdInt])) {
+                $tierCache[$productIdInt] = fetch_tiered_prices($pdo, $productIdInt);
+            }
+            $defaultPrice = (float) ($productCache[$productIdInt]['base_price'] ?? 0);
+            $item['unit_price'] = $defaultPrice;
+            $bundleMeta = resolve_bundle_pricing($tierCache[$productIdInt], (float) $item['quantity'], $defaultPrice);
+            $item['bundle_meta'] = $bundleMeta;
+            // Keep item['price'] as the unit price for compatibility (stored in sale_items.price as unit price-ish).
+            $item['price'] = $defaultPrice;
+
+            $lineTotal = (float) ($bundleMeta['total'] ?? ($item['quantity'] * $defaultPrice));
+            $lineDiscount = min($item['discount'], $lineTotal);
+            $lineNet = $lineTotal - $lineDiscount;
+
+            $subtotal += $lineNet;
+            $totalDiscount += $lineDiscount;
+            $totalItems += $item['quantity'];
+
+            $item['net_total'] = $lineNet;
+            $item['name'] = $productCache[$item['product_id']]['name'];
         }
-
-        $lineTotal = $item['quantity'] * $item['price'];
-        $lineDiscount = min($item['discount'], $lineTotal);
-        $lineNet = $lineTotal - $lineDiscount;
-
-        $subtotal += $lineNet;
-        $totalDiscount += $lineDiscount;
-        $totalItems += $item['quantity'];
-
-        $item['net_total'] = $lineNet;
-        $item['name'] = $productCache[$item['product_id']]['name'];
     }
     unset($item);
 
@@ -146,9 +280,11 @@ try {
 
     if ($memberId > 0) {
         foreach ($items as $item) {
+            if (!empty($item['is_digital'])) {
+                continue;
+            }
             $pointsReward = (int) ($productCache[$item['product_id']]['points_reward'] ?? 0);
             if ($pointsReward > 0) {
-                // Calculate points based on the net total for that item line
                 $pointsEarned += (int) floor($item['net_total'] / $pointsReward);
             }
         }
@@ -205,7 +341,9 @@ try {
         $grandTotal = round($netTotal, 2);
     }
 
-    $invoiceCode = 'INV-' . date('ymd') . '-' . strtoupper(bin2hex(random_bytes(2)));
+    $invoiceCode = $hasAnyDigital 
+        ? 'DGT-' . date('ymd') . '-' . strtoupper(bin2hex(random_bytes(2)))
+        : 'INV-' . date('ymd') . '-' . strtoupper(bin2hex(random_bytes(2)));
 
     $stmt = $pdo->prepare("
         INSERT INTO sales (invoice_code, member_id, cashier_id, total_items, subtotal, discount_amount, points_used, points_earned, grand_total, payment_method, cash_paid, change_returned, notes, created_at, updated_at)
@@ -230,8 +368,8 @@ try {
     $saleId = (int) $pdo->lastInsertId();
 
     $insertItemStmt = $pdo->prepare("
-        INSERT INTO sale_items (sale_id, product_id, batch_id, quantity, price, discount, total)
-        VALUES (:sale_id, :product_id, :batch_id, :quantity, :price, :discount, :total)
+        INSERT INTO sale_items (sale_id, product_id, product_name, digital_details, batch_id, quantity, price, discount, total)
+        VALUES (:sale_id, :product_id, :product_name, :digital_details, :batch_id, :quantity, :price, :discount, :total)
     ");
     $updateBatchStmt = $pdo->prepare("UPDATE product_batches SET stock_remaining = stock_remaining - :quantity WHERE id = :id");
     $insertAdjustmentStmt = $pdo->prepare("
@@ -240,10 +378,57 @@ try {
     ");
 
     foreach ($items as $item) {
+        if (!empty($item['is_digital'])) {
+            $lineTotal = $item['quantity'] * $item['price'];
+            
+            $details = [];
+            if (!empty($item['digital_tujuan'])) {
+                $details[] = 'Tujuan: ' . $item['digital_tujuan'];
+            }
+            if (!empty($item['digital_layanan'])) {
+                $details[] = 'Detail: ' . $item['digital_layanan'];
+            }
+            $digitalDetailsStr = implode(' | ', $details);
+
+            $insertItemStmt->execute([
+                ':sale_id' => $saleId,
+                ':product_id' => null,
+                ':product_name' => $item['name'],
+                ':digital_details' => $digitalDetailsStr ?: null,
+                ':batch_id' => null,
+                ':quantity' => $item['quantity'],
+                ':price' => $item['price'],
+                ':discount' => 0,
+                ':total' => $lineTotal,
+            ]);
+            continue;
+        }
+
         $remainingQty = $item['quantity'];
         $lineDiscount = $item['discount'];
         $originalQty = $item['quantity'];
         $discountLeft = $lineDiscount;
+        $consumedSoFar = 0.0;
+
+        $productIdInt = (int) $item['product_id'];
+        $unitPrice = (float) ($item['unit_price'] ?? $item['price'] ?? 0);
+        $tiers = $tierCache[$productIdInt] ?? [];
+        $bundleQty = 0;
+        $bundlePrice = 0.0;
+        foreach ($tiers as $t) {
+            $q = (int) ($t['min_qty'] ?? 0);
+            $p = (float) ($t['price'] ?? 0);
+            if ($q > $bundleQty && $p > 0) {
+                $bundleQty = $q;
+                $bundlePrice = $p;
+            }
+        }
+        $bundleUnitPrice = ($bundleQty > 0 && $bundlePrice > 0) ? round($bundlePrice / $bundleQty, 2) : 0.0;
+        $totalBundleUnits = ($bundleQty > 0 && $bundlePrice > 0) ? (int) (floor($originalQty / $bundleQty) * $bundleQty) : 0;
+        $totalForUnits = static function (array $tiers, float $qty, float $unitPrice): float {
+            $meta = resolve_bundle_pricing($tiers, $qty, $unitPrice);
+            return (float) ($meta['total'] ?? ($qty * $unitPrice));
+        };
 
         $batchStmt = $pdo->prepare("
             SELECT id, stock_remaining, sell_price
@@ -252,6 +437,7 @@ try {
               AND stock_remaining > 0
               AND (expiry_date IS NULL OR expiry_date >= CURDATE())
             ORDER BY received_at ASC, id ASC
+            FOR UPDATE
         ");
         $batchStmt->execute([':product_id' => $item['product_id']]);
         $batches = $batchStmt->fetchAll();
@@ -259,19 +445,6 @@ try {
         $availableStock = 0.0;
         foreach ($batches as $batch) {
             $availableStock += (float) $batch['stock_remaining'];
-        }
-
-        if ($availableStock < $remainingQty) {
-            $deficit = $remainingQty - $availableStock;
-            ensure_child_stock($pdo, $item['product_id'], $deficit, $item['price'], $user['id']);
-
-            $batchStmt->execute([':product_id' => $item['product_id']]);
-            $batches = $batchStmt->fetchAll();
-
-            $availableStock = 0.0;
-            foreach ($batches as $batch) {
-                $availableStock += (float) $batch['stock_remaining'];
-            }
         }
 
         if (!$batches || $availableStock < $remainingQty) {
@@ -298,17 +471,50 @@ try {
                 }
             }
 
-            $lineTotal = ($takeQty * $item['price']) - $batchDiscount;
+            // Insert sale_items in chunks so that pricing stays readable:
+            // - full bundle chunks use bundleUnitPrice
+            // - remainder uses unitPrice
+            $remainingInBatch = (float) $takeQty;
+            $batchDiscountRemaining = (float) $batchDiscount;
+            while ($remainingInBatch > 0) {
+                $chunkQty = $remainingInBatch;
+                $useBundlePricing = false;
 
-            $insertItemStmt->execute([
-                ':sale_id' => $saleId,
-                ':product_id' => $item['product_id'],
-                ':batch_id' => $batch['id'],
-                ':quantity' => $takeQty,
-                ':price' => $item['price'],
-                ':discount' => $batchDiscount,
-                ':total' => $lineTotal,
-            ]);
+                if ($totalBundleUnits > 0 && $consumedSoFar < $totalBundleUnits) {
+                    $useBundlePricing = true;
+                    $chunkQty = min($remainingInBatch, (float) ($totalBundleUnits - $consumedSoFar));
+                }
+
+                $segmentBaseTotal = $totalForUnits($tiers, $consumedSoFar + $chunkQty, $unitPrice) - $totalForUnits($tiers, $consumedSoFar, $unitPrice);
+                $segmentDiscount = 0.0;
+                if ($batchDiscountRemaining > 0) {
+                    // Allocate remaining discount proportionally to this chunk.
+                    $segmentDiscount = round(($chunkQty / $takeQty) * $batchDiscount, 2);
+                    $batchDiscountRemaining -= $segmentDiscount;
+                    if ($batchDiscountRemaining < 0) {
+                        $segmentDiscount += $batchDiscountRemaining;
+                        $batchDiscountRemaining = 0.0;
+                    }
+                }
+
+                $lineTotal = (float) $segmentBaseTotal - (float) $segmentDiscount;
+                $unitPriceForSegment = $useBundlePricing ? $bundleUnitPrice : ($chunkQty > 0 ? round(((float) $segmentBaseTotal) / (float) $chunkQty, 2) : (float) $unitPrice);
+
+                $insertItemStmt->execute([
+                    ':sale_id' => $saleId,
+                    ':product_id' => $item['product_id'],
+                    ':product_name' => $item['name'],
+                    ':digital_details' => null,
+                    ':batch_id' => $batch['id'],
+                    ':quantity' => $chunkQty,
+                    ':price' => $unitPriceForSegment,
+                    ':discount' => $segmentDiscount,
+                    ':total' => $lineTotal,
+                ]);
+
+                $remainingInBatch -= $chunkQty;
+                $consumedSoFar += $chunkQty;
+            }
 
             $updateBatchStmt->execute([
                 ':quantity' => $takeQty,
@@ -373,8 +579,17 @@ try {
     }
 
     $pdo->commit();
+
+    // INTEGRITY GUARD: Cek stok otomatis setelah commit
+    foreach ($items as $item) {
+        if (empty($item['is_digital'])) {
+            verify_product_stock_integrity($pdo, (int)$item['product_id']);
+        }
+    }
 } catch (Throwable $e) {
-    $pdo->rollBack();
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
     redirect_with_message('/index.php?page=transaksi', 'Gagal menyimpan transaksi: ' . $e->getMessage(), 'error');
 }
 

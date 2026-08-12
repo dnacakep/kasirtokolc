@@ -10,7 +10,7 @@ guard_post();
 verify_csrf_token($_POST['csrf_token'] ?? '');
 
 $productId = (int) ($_POST['product_id'] ?? 0);
-$quantity = (int) ($_POST['quantity'] ?? 0);
+$quantity = (float) ($_POST['quantity'] ?? 0);
 $reason = trim($_POST['reason'] ?? '');
 $recordExpense = ($_POST['record_expense'] ?? '0') === '1';
 
@@ -31,7 +31,7 @@ if (!$productName) {
 
 $totalStockStmt = $pdo->prepare("SELECT COALESCE(SUM(stock_remaining),0) FROM product_batches WHERE product_id = :id");
 $totalStockStmt->execute([':id' => $productId]);
-$currentStock = (int) $totalStockStmt->fetchColumn();
+$currentStock = (float) $totalStockStmt->fetchColumn();
 
 $metadata = [
     'product_name' => $productName,
@@ -86,8 +86,8 @@ if (in_array($user['role'], [ROLE_MANAJER, ROLE_ADMIN], true)) {
     $consumedBatches = [];
     
     // Check if enough stock
-    $totalAvailable = 0;
-    foreach ($batches as $b) $totalAvailable += $b['stock_remaining'];
+    $totalAvailable = 0.0;
+    foreach ($batches as $b) $totalAvailable += (float) $b['stock_remaining'];
     
     if ($totalAvailable < $quantity) {
         // Cannot fulfill request automatically due to insufficient stock.
@@ -106,7 +106,7 @@ if (in_array($user['role'], [ROLE_MANAJER, ROLE_ADMIN], true)) {
     foreach ($batches as $batch) {
         if ($remaining <= 0) break;
         
-        $available = (int) $batch['stock_remaining'];
+        $available = (float) $batch['stock_remaining'];
         if ($available <= 0) continue;
         
         $take = min($remaining, $available);

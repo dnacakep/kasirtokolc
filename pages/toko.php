@@ -6,8 +6,6 @@ if (!function_exists('ensure_csrf_token')) {
 }
 
 ensure_csrf_token();
-$user = current_user();
-$isAdmin = $user && $user['role'] === ROLE_ADMIN;
 
 $settings = get_store_settings();
 $logoUrl = '';
@@ -65,14 +63,3 @@ if (!empty($settings['logo_path'])) {
         <?php endif; ?>
     </form>
 </section>
-
-<?php if ($isAdmin): ?>
-<section class="card" style="margin-top:1rem;">
-    <h3>Wizard Setup</h3>
-    <p class="muted">Jalankan ulang wizard instalasi untuk mengubah konfigurasi awal.</p>
-    <form method="post" action="<?= BASE_URL ?>/actions/restart_setup.php" onsubmit="return confirm('Wizard akan dijalankan ulang. Lanjutkan?');">
-        <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
-        <button class="button" type="submit">Buka Wizard Setup</button>
-    </form>
-</section>
-<?php endif; ?>

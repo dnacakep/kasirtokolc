@@ -75,7 +75,7 @@ if ($decision === 'reject') {
 }
 
 $productId = (int) $request['product_id'];
-$requestedQty = (int) $request['requested_quantity'];
+$requestedQty = (float) $request['requested_quantity'];
 $reason = $request['reason'];
 $recordExpense = (int) $request['record_expense'] === 1;
 
@@ -108,7 +108,7 @@ foreach ($batches as $batch) {
     if ($remaining <= 0) {
         break;
     }
-    $available = (int) $batch['stock_remaining'];
+    $available = (float) $batch['stock_remaining'];
     if ($available <= 0) {
         continue;
     }

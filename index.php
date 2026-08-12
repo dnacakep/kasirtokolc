@@ -1,11 +1,5 @@
 <?php
 
-require_once __DIR__ . '/config/setup_state.php';
-if (setup_requires_wizard()) {
-    header('Location: ' . setup_build_url());
-    exit;
-}
-
 require_once __DIR__ . '/config/auth.php';
 require_once __DIR__ . '/includes/fungsi.php';
 

@@ -43,9 +43,10 @@ if ($sale['member_id']) {
 }
 
 $stmt = $pdo->prepare("
-    SELECT si.*, p.name
+    SELECT si.sale_id, si.product_id, si.quantity, si.price, si.discount, si.total, si.digital_details,
+           COALESCE(si.product_name, p.name, 'Digital/Jasa') AS name
     FROM sale_items si
-    INNER JOIN products p ON p.id = si.product_id
+    LEFT JOIN products p ON p.id = si.product_id
     WHERE si.sale_id = :id
 ");
 $stmt->execute([':id' => $saleId]);

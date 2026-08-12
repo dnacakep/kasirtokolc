@@ -1,9 +1,6 @@
 <?php
 
 require_once __DIR__ . '/timezone.php';
-require_once __DIR__ . '/setup_state.php';
-
-$SETUP_CONFIG = setup_load_config();
 
 if (!defined('APP_ENV')) {
     $appEnv = getenv('APP_ENV') ?: 'production';
@@ -23,24 +20,35 @@ if (!defined('APP_DEBUG')) {
 require_once __DIR__ . '/error_handler.php';
 app_initialize_error_handling();
 
-define('APP_NAME', $SETUP_CONFIG['store']['name'] ?? 'Kasir Minimarket');
+define('APP_NAME', 'Kasir Minimarket');
 
-$baseUrl = $SETUP_CONFIG['base_url'] ?? getenv('BASE_URL');
-if ($baseUrl !== false && $baseUrl !== null && $baseUrl !== '') {
+$baseUrl = getenv('BASE_URL');
+if ($baseUrl !== false && $baseUrl !== null) {
     $baseUrl = rtrim($baseUrl, '/');
 } else {
-    $baseUrl = setup_guess_base_url();
+    $documentRoot = $_SERVER['DOCUMENT_ROOT'] ?? '';
+    $appRoot = realpath(__DIR__ . '/..') ?: '';
+
+    $documentRoot = rtrim(str_replace('\\', '/', $documentRoot), '/');
+    $appRoot = rtrim(str_replace('\\', '/', $appRoot), '/');
+
+    if ($documentRoot && str_starts_with($appRoot, $documentRoot)) {
+        $baseUrl = substr($appRoot, strlen($documentRoot));
+        $baseUrl = $baseUrl === '' ? '' : '/' . ltrim($baseUrl, '/');
+    } else {
+        $baseUrl = '/kasirtokolc';
+    }
 }
 
-define('BASE_URL', $baseUrl === '' ? '' : $baseUrl);
-define('SESSION_TIMEOUT', 60 * 60 * 4);
+define('BASE_URL', $baseUrl);
+define('SESSION_TIMEOUT', 60 * 60 * 24 * 30); // 30 hari
 
 define('ROLE_KASIR', 'kasir');
 define('ROLE_MANAJER', 'manajer');
 define('ROLE_ADMIN', 'adminsuper');
 
 if (!defined('KASIR_INACTIVITY_TIMEOUT')) {
-    define('KASIR_INACTIVITY_TIMEOUT', 60 * 60 * 8);
+    define('KASIR_INACTIVITY_TIMEOUT', 60 * 60 * 24 * 30); // 30 hari
 }
 
 $ROLE_HIERARCHY = [

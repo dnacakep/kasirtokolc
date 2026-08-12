@@ -8,6 +8,24 @@ if (!function_exists('ensure_csrf_token')) {
 ensure_csrf_token();
 
 $pdo = get_db_connection();
+$tieredPriceMap = [];
+ensure_tiered_prices_schema($pdo);
+try {
+    $tierRows = $pdo->query("SELECT product_id, min_qty, price FROM tiered_prices ORDER BY product_id ASC, min_qty ASC")->fetchAll();
+    foreach ($tierRows as $row) {
+        $pid = (int) ($row['product_id'] ?? 0);
+        if ($pid <= 0) {
+            continue;
+        }
+        $tieredPriceMap[$pid][] = [
+            'min_qty' => (int) ($row['min_qty'] ?? 0),
+            'price' => (float) ($row['price'] ?? 0),
+        ];
+    }
+} catch (Throwable $e) {
+    $tieredPriceMap = [];
+}
+
 $products = $pdo->query("
     SELECT p.id, p.name, p.barcode, p.points_reward,
            COALESCE(
@@ -24,17 +42,17 @@ $products = $pdo->query("
     ORDER BY p.name ASC
 ")->fetchAll();
 
-
-
-$productCatalog = array_map(function ($product) {
+$productCatalog = array_map(function ($product) use ($tieredPriceMap) {
+    $id = (int) $product['id'];
     return [
-        'id' => (int) $product['id'],
+        'id' => $id,
         'name' => $product['name'],
         'barcode' => $product['barcode'],
         'price' => isset($product['current_price']) ? (float) $product['current_price'] : 0.0,
         'points_reward' => isset($product['points_reward']) ? (int) $product['points_reward'] : 0,
         'earliest_expiry' => $product['earliest_expiry'] ?? null,
         'stock_available' => isset($product['stock_available']) ? (int) $product['stock_available'] : 0,
+        'tiers' => $tieredPriceMap[$id] ?? [],
     ];
 }, $products);
 
@@ -65,7 +83,13 @@ $lastSale = consume_last_sale_summary();
             }
         }
 
-        $itemsStmt = $pdo->prepare("SELECT p.name, si.quantity, si.price, si.total FROM sale_items si JOIN products p ON p.id = si.product_id WHERE si.sale_id = :sale_id");
+        $itemsStmt = $pdo->prepare("
+            SELECT COALESCE(si.product_name, p.name, 'Digital/Jasa') AS name, 
+                   si.quantity, si.price, si.total, si.digital_details
+            FROM sale_items si 
+            LEFT JOIN products p ON p.id = si.product_id 
+            WHERE si.sale_id = :sale_id
+        ");
         $itemsStmt->execute([':sale_id' => $lastSale['sale_id']]);
         $saleItemsForWa = $itemsStmt->fetchAll();
 
@@ -74,7 +98,11 @@ $lastSale = consume_last_sale_summary();
         $waMessage .= "Total: " . format_rupiah((float) $lastSale['grand_total']) . "\n\n";
         $waMessage .= "Detail Pembelian:\n";
         foreach($saleItemsForWa as $item) {
-            $waMessage .= "- " . $item['name'] . " (" . $item['quantity'] . " x " . format_rupiah($item['price']) . ") = " . format_rupiah($item['total']) . "\n";
+            $waMessage .= "- " . $item['name'];
+            if (!empty($item['digital_details'])) {
+                $waMessage .= " (" . $item['digital_details'] . ")";
+            }
+            $waMessage .= " (" . (float)$item['quantity'] . " x " . format_rupiah($item['price']) . ") = " . format_rupiah($item['total']) . "\n";
         }
         $waMessage .= "\nSemoga harimu menyenangkan!";
     }
@@ -109,7 +137,7 @@ $lastSale = consume_last_sale_summary();
         <h2>Transaksi Baru</h2>
         <p class="muted">Fokuskan kolom pencarian di kiri untuk scan cepat, lalu atur pembayaran di panel kanan.</p>
     </div>
-    <form id="transaction-form" class="pos-transaction-form" method="post" action="<?= BASE_URL ?>/actions/transaksi_simpan.php">
+    <form id="transaction-form" class="pos-transaction-form" method="post" action="<?= BASE_URL ?>/actions/transaksi_simpan.php" novalidate>
         <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
         <div class="pos-display pos-display--fullwidth">
             <div class="pos-display-total">
@@ -119,7 +147,7 @@ $lastSale = consume_last_sale_summary();
             <div class="pos-display-details">
                 <div class="pos-detail-group">
                     <label for="cash_paid">DIBAYAR</label>
-                    <input type="number" id="cash_paid" name="cash_paid" min="0" step="0.01">
+                    <input type="text" id="cash_paid" name="cash_paid" inputmode="numeric" placeholder="Rp 0">
                 </div>
                 <div class="pos-detail-group pos-change-group">
                     <label>KEMBALIAN</label>
@@ -142,35 +170,102 @@ $lastSale = consume_last_sale_summary();
         <div class="pos-tablet-grid">
             <div class="pos-tablet-left">
                 <div class="pos-left-scroll">
-                    <div class="form-group barcode-entry">
-                        <label for="barcode-input">Scan Barcode / Cari Barang</label>
-                        <div class="barcode-input-wrapper">
-                            <input type="text" id="barcode-input" placeholder="Scan atau ketik nama/barcode barang" autocomplete="off" list="barcode-suggestions">
-                            <button class="button secondary scan-button" type="button" data-scan-target="barcode-input" aria-label="Scan barcode menggunakan kamera">&#128247;</button>
-                            <button class="button secondary" type="button" id="barcode-clear">Bersihkan</button>
-                        </div>
-                        <small class="muted">Kolom ini selalu aktif untuk scan berikutnya. Tekan Escape jika ingin mengosongkan.</small>
-                        <p class="barcode-feedback" id="barcode-feedback" hidden>Barang tidak ditemukan.</p>
-                        <div id="custom-suggestions" class="autocomplete-suggestions"></div>
+                    <div class="pos-tabs">
+                        <button type="button" class="pos-tab active" data-tab="barang">Barang</button>
+                        <button type="button" class="pos-tab" data-tab="digital">Digital / Jasa</button>
                     </div>
-                    <div class="pos-cart-table">
-                        <table class="table table-stack table-compact" id="items-table">
-                            <thead>
-                            <tr>
-                                <th>Barang</th>
-                                <th>Qty</th>
-                                <th>Harga</th>
-                                <th>Diskon</th>
-                                <th>Subtotal</th>
-                                <th></th>
-                            </tr>
-                            </thead>
-                            <tbody>
-                            <tr class="empty-row">
-                                <td colspan="6" class="muted" style="text-align:center;">Belum ada barang. Gunakan kolom barcode/pencarian untuk menambah.</td>
-                            </tr>
-                            </tbody>
-                        </table>
+                    <div class="pos-tab-content" id="tab-barang">
+                        <div class="form-group barcode-entry">
+                            <label for="barcode-input">Scan Barcode / Cari Barang</label>
+                            <div class="barcode-input-wrapper">
+                                <input type="text" id="barcode-input" placeholder="Scan atau ketik nama/barcode barang" autocomplete="off" list="barcode-suggestions">
+                                <button class="button secondary scan-button" type="button" data-scan-target="barcode-input" aria-label="Scan barcode menggunakan kamera">&#128247;</button>
+                                <button class="button secondary" type="button" id="barcode-clear">Bersihkan</button>
+                            </div>
+                            <small class="muted">Kolom ini selalu aktif untuk scan berikutnya. Tekan Escape jika ingin mengosongkan.</small>
+                            <p class="barcode-feedback" id="barcode-feedback" hidden>Barang tidak ditemukan.</p>
+                            <div id="custom-suggestions" class="autocomplete-suggestions"></div>
+                        </div>
+                    </div>
+                    <div class="pos-tab-content" id="tab-digital" hidden>
+                        <div class="form-group">
+                            <label for="digital_type">Jenis Layanan</label>
+                            <select id="digital_type">
+                                <option value="">-- Pilih Jenis --</option>
+                                <optgroup label="E-Wallet">
+                                    <option value="dana">Top Up DANA</option>
+                                    <option value="ovo">Top Up OVO</option>
+                                    <option value="gopay">Top Up GoPay</option>
+                                    <option value="shopeepay">Top Up ShopeePay</option>
+                                    <option value="linkaja">Top Up LinkAja</option>
+                                    <option value="imax">Top Up i.saku / Maxim</option>
+                                </optgroup>
+                                <optgroup label="Transfer Bank">
+                                    <option value="transfer_bca">Transfer BCA</option>
+                                    <option value="transfer_bni">Transfer BNI</option>
+                                    <option value="transfer_mandiri">Transfer Mandiri</option>
+                                    <option value="transfer_bri">Transfer BRI</option>
+                                    <option value="transfer_btpn">Transfer BTPN / Jenius</option>
+                                    <option value="transfer_cimb">Transfer CIMB Niaga</option>
+                                    <option value="transfer_permata">Transfer Permata</option>
+                                    <option value="transfer_danamon">Transfer Danamon</option>
+                                    <option value="transfer_ocbc">Transfer OCBC NISP</option>
+                                    <option value="transfer_banklain">Transfer Bank Lain</option>
+                                </optgroup>
+                                <optgroup label="Jasa / Lainnya">
+                                    <option value="pulsa">Pulsa Elektrik</option>
+                                    <option value="token_listrik">Token Listrik</option>
+                                    <option value="paket_data">Paket Data</option>
+                                    <option value="jasa_antar">Jasa Antar / Grab/Gojek</option>
+                                    <option value="jasa_cetak">Jasa Cetak</option>
+                                    <option value="jasa_lain">Jasa Lainnya</option>
+                                </optgroup>
+                            </select>
+                        </div>
+                        <div class="form-group" id="custom-bank-group" hidden>
+                            <label for="digital_custom_bank">Nama Bank</label>
+                            <input type="text" id="digital_custom_bank" placeholder="Contoh: Bank Jawa Tengah, BSI">
+                        </div>
+                        <div class="form-group">
+                            <label for="digital_tujuan">No Tujuan / Rekening Tujuan</label>
+                            <input type="tel" id="digital_tujuan" inputmode="numeric" placeholder="Masukkan angka saja (HP/Rekening)">
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="digital_modal">Harga Modal</label>
+                                <input type="text" id="digital_modal" inputmode="numeric" placeholder="Contoh: 10.000">
+                            </div>
+                            <div class="form-group">
+                                <label for="digital_jual">Harga Jual</label>
+                                <input type="text" id="digital_jual" inputmode="numeric" placeholder="Contoh: 12.000">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="digital_layanan">Jumlah Isi</label>
+                            <input type="text" id="digital_layanan" placeholder="Contoh: 10.000">
+                        </div>
+                        <button type="button" class="button button-primary" id="add-digital-btn">Tambah ke Transaksi</button>
+                    </div>
+                    <div class="pos-cart-scroll">
+                        <div class="pos-cart-table">
+                            <table class="table table-stack table-compact" id="items-table">
+                                <thead>
+                                <tr>
+                                    <th>Barang</th>
+                                    <th>Qty</th>
+                                    <th>Harga</th>
+                                    <th>Diskon</th>
+                                    <th>Subtotal</th>
+                                    <th></th>
+                                </tr>
+                                </thead>
+                                <tbody>
+                                <tr class="empty-row">
+                                    <td colspan="6" class="muted" style="text-align:center;">Belum ada barang. Gunakan kolom barcode/pencarian untuk menambah.</td>
+                                </tr>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -203,7 +298,7 @@ $lastSale = consume_last_sale_summary();
                     </div>
                     <div class="form-group">
                         <label for="points_used">Poin Digunakan</label>
-                        <input type="number" id="points_used" name="points_used" min="0" value="0">
+                        <input type="text" id="points_used" name="points_used" inputmode="numeric" placeholder="Rp 0">
                         <p class="muted" id="points-summary" hidden></p>
                     </div>
                     <div class="form-group">
@@ -221,11 +316,22 @@ $lastSale = consume_last_sale_summary();
                         <strong class="product-name">-</strong>
                         <div class="product-barcode muted"></div>
                     </div>
-                    <input type="hidden" name="product_id[]" class="product-id-input" required>
+                    <input type="hidden" name="product_id[]" class="product-id-input">
+                    <input type="hidden" name="is_digital_item[]" class="is-digital-item-input" value="0">
+                    <input type="hidden" name="digital_type_item[]" class="digital-type-item-input" value="">
+                    <input type="hidden" name="digital_tujuan_item[]" class="digital-tujuan-item-input" value="">
+                    <input type="hidden" name="digital_modal_item[]" class="digital-modal-item-input" value="0">
+                    <input type="hidden" name="digital_layanan_item[]" class="digital-layanan-item-input" value="">
                 </td>
-                <td data-label="Qty"><input type="number" name="quantity[]" class="quantity-input" min="1" value="1" required></td>
-                <td data-label="Harga"><input type="number" name="price[]" class="price-input" min="0" step="0.01" required></td>
-                <td data-label="Diskon"><input type="number" name="discount[]" class="discount-input" min="0" step="0.01" value="0"></td>
+                <td data-label="Qty">
+                    <div class="qty-control">
+                        <button type="button" class="qty-btn qty-minus">-</button>
+                        <input type="text" name="quantity[]" class="quantity-input" inputmode="numeric" value="1" required>
+                        <button type="button" class="qty-btn qty-plus">+</button>
+                    </div>
+                </td>
+                <td data-label="Harga"><input type="text" name="price[]" class="price-input" inputmode="numeric" required></td>
+                <td data-label="Diskon"><input type="text" name="discount[]" class="discount-input" inputmode="numeric" value="Rp 0"></td>
                 <td class="subtotal-cell" data-label="Subtotal">0</td>
                 <td data-label="Aksi"><button class="button secondary remove-row" type="button">Hapus</button></td>
             </tr>
@@ -261,7 +367,6 @@ $lastSale = consume_last_sale_summary();
     </form>
 </section>
 
-
 <script id="product-catalog" type="application/json"><?= json_encode($productCatalog, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?></script>
 <script>
     const productCatalogElement = document.getElementById('product-catalog');
@@ -272,6 +377,7 @@ $lastSale = consume_last_sale_summary();
 
     productCatalog.forEach(product => {
         product.stock_available = Number(product.stock_available ?? 0);
+        product.tiers = Array.isArray(product.tiers) ? product.tiers : [];
         if (product.barcode) {
             productMap.set(normalizeBarcode(product.barcode), product);
         }
@@ -307,6 +413,36 @@ $lastSale = consume_last_sale_summary();
     const currencyFormatter = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' });
     let lastGrandTotal = 0;
     let lastDebtOutstanding = 0;
+    const isCoarsePointerDevice = () => {
+        try {
+            return window.matchMedia('(pointer: coarse)').matches;
+        } catch (error) {
+            return ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+        }
+    };
+
+    const focusBarcodeField = (options = {}) => {
+        if (!barcodeInput) {
+            return;
+        }
+        const { force = false } = options;
+        if (!force && isCoarsePointerDevice()) {
+            return;
+        }
+        barcodeInput.focus();
+    };
+
+    const clearBarcodeFieldForNextScan = () => {
+        if (!barcodeInput) {
+            return;
+        }
+        barcodeInput.value = '';
+        if (isCoarsePointerDevice()) {
+            barcodeInput.blur();
+            return;
+        }
+        focusBarcodeField();
+    };
 
     const clearEmptyState = () => {
         const emptyRow = itemsTable.querySelector('.empty-row');
@@ -362,8 +498,7 @@ $lastSale = consume_last_sale_summary();
             return;
         }
 
-        const cashValue = parseFloat(cashPaidInput.value);
-        const cashPaid = Number.isFinite(cashValue) ? cashValue : 0;
+        const cashPaid = parseCurrencyValue(cashPaidInput.value);
         const change = cashPaid - grandTotal;
 
         if (!Number.isFinite(change)) {
@@ -386,18 +521,12 @@ $lastSale = consume_last_sale_summary();
 
         let pointsUsed = 0;
         if (pointsUsedInput && pointsUsedInput.value !== '') {
-            const parsed = parseFloat(pointsUsedInput.value);
-            if (Number.isFinite(parsed) && parsed > 0) {
-                pointsUsed = parsed;
-            }
+            pointsUsed = parseCurrencyValue(pointsUsedInput.value);
         }
 
         let cashPaid = 0;
         if (cashPaidInput && cashPaidInput.value !== '') {
-            const parsedCash = parseFloat(cashPaidInput.value);
-            if (Number.isFinite(parsedCash) && parsedCash > 0) {
-                cashPaid = parsedCash;
-            }
+            cashPaid = parseCurrencyValue(cashPaidInput.value);
         }
 
         const method = paymentMethodSelect ? paymentMethodSelect.value : 'cash';
@@ -501,29 +630,73 @@ $lastSale = consume_last_sale_summary();
     };
 
     const updateRow = (row) => {
-        const quantity = parseFloat(row.querySelector('.quantity-input').value) || 0;
-        const price = parseFloat(row.querySelector('.price-input').value) || 0;
-        const discount = parseFloat(row.querySelector('.discount-input').value) || 0;
-        const subtotal = Math.max(0, (quantity * price) - discount);
+        const productId = row?.dataset?.productId;
+        const quantity = parseCurrencyValue(row.querySelector('.quantity-input').value) || 0;
+        const unitPrice = parseCurrencyValue(row.querySelector('.price-input').value) || 0;
+        const discount = parseCurrencyValue(row.querySelector('.discount-input').value) || 0;
+
+        let subtotal = 0;
+        if (productId && productMap.has(productId)) {
+            const product = productMap.get(productId);
+            // Use the current unit price input as the unit-price baseline for bundle calculation.
+            const calcProduct = { ...product, price: unitPrice };
+            const bundle = resolveBundlePricing(calcProduct, quantity);
+            subtotal = Math.max(0, Number(bundle.total || 0) - discount);
+        } else {
+            subtotal = Math.max(0, (quantity * unitPrice) - discount);
+        }
+
         row.dataset.subtotal = subtotal.toString();
         row.querySelector('.subtotal-cell').textContent = currencyFormatter.format(subtotal);
         updateTotal();
     };
 
     const bindRowEvents = (row) => {
-        row.dataset.subtotal = '0';
+        if (!row.dataset.subtotal) {
+            row.dataset.subtotal = '0';
+        }
 
         const quantityInput = row.querySelector('.quantity-input');
         if (quantityInput) {
-            quantityInput.addEventListener('input', () => {
+            quantityInput.addEventListener('input', (e) => {
+                e.target.value = e.target.value.replace(/\D/g, '');
                 clampRowQuantityToStock(row);
                 updateRow(row);
             });
         }
 
-        row.querySelectorAll('.price-input, .discount-input').forEach(input => {
-            input.addEventListener('input', () => updateRow(row));
-        });
+        const minusBtn = row.querySelector('.qty-minus');
+        const plusBtn = row.querySelector('.qty-plus');
+        if (minusBtn && quantityInput) {
+            minusBtn.addEventListener('click', () => {
+                let val = parseInt(quantityInput.value) || 0;
+                if (val > 1) {
+                    quantityInput.value = val - 1;
+                    clampRowQuantityToStock(row);
+                    updateRow(row);
+                }
+            });
+        }
+        if (plusBtn && quantityInput) {
+            plusBtn.addEventListener('click', () => {
+                let val = parseInt(quantityInput.value) || 0;
+                quantityInput.value = val + 1;
+                clampRowQuantityToStock(row);
+                updateRow(row);
+            });
+        }
+
+        const priceInput = row.querySelector('.price-input');
+        if (priceInput) {
+            formatCurrencyInput(priceInput);
+            priceInput.addEventListener('input', () => updateRow(row));
+        }
+
+        const discountInput = row.querySelector('.discount-input');
+        if (discountInput) {
+            formatCurrencyInput(discountInput);
+            discountInput.addEventListener('input', () => updateRow(row));
+        }
 
         row.querySelector('.remove-row').addEventListener('click', () => {
             row.remove();
@@ -553,8 +726,14 @@ $lastSale = consume_last_sale_summary();
         }
 
         const priceInput = row.querySelector('.price-input');
-        if (priceInput && (!priceInput.value || priceInput.value === '0') && product.price) {
-            priceInput.value = product.price;
+        if (priceInput) {
+            const base = Number(product.price ?? 0);
+            if (Number.isFinite(base) && base > 0) {
+                const formatted = new Intl.NumberFormat('id-ID').format(base);
+                priceInput.value = 'Rp ' + formatted;
+            }
+            // Unit price stays editable; bundle pricing is applied on subtotal calculation.
+            priceInput.readOnly = false;
         }
     };
 
@@ -575,6 +754,36 @@ $lastSale = consume_last_sale_summary();
         }
         updateRow(row);
         return row;
+    };
+
+    const resolveBundlePricing = (product, quantity) => {
+        const qty = Math.floor(Number(quantity ?? 0));
+        const unitPrice = Number(product?.price ?? 0);
+        const tiers = Array.isArray(product?.tiers) ? product.tiers : [];
+
+        let bundleQty = 0;
+        let bundlePrice = 0;
+        tiers.forEach(t => {
+            const q = Number(t?.min_qty ?? 0);
+            const p = Number(t?.price ?? 0);
+            if (Number.isFinite(q) && Number.isFinite(p) && q > bundleQty && p > 0) {
+                bundleQty = q;
+                bundlePrice = p;
+            }
+        });
+
+        if (!Number.isFinite(qty) || qty <= 0) {
+            return { total: 0, bundleQty: bundleQty || 0, bundlePrice: bundlePrice || 0, bundleCount: 0, remainder: 0, unitPrice };
+        }
+
+        if (bundleQty > 0 && bundlePrice > 0) {
+            const bundleCount = Math.floor(qty / bundleQty);
+            const remainder = qty % bundleQty;
+            const total = (bundleCount * bundlePrice) + (remainder * unitPrice);
+            return { total, bundleQty, bundlePrice, bundleCount, remainder, unitPrice };
+        }
+
+        return { total: qty * unitPrice, bundleQty: 0, bundlePrice: 0, bundleCount: 0, remainder: qty, unitPrice };
     };
 
     const hideBarcodeFeedback = () => {
@@ -643,7 +852,10 @@ $lastSale = consume_last_sale_summary();
         if (Number.isFinite(maxStock) && maxStock > 0 && quantity > maxStock) {
             quantity = maxStock;
             showBarcodeFeedback(`Stok "${product.name}" tersisa ${maxStock}. Jumlah disesuaikan.`);
-        } else if (!Number.isFinite(maxStock) || maxStock === 0 || quantity <= maxStock) {
+        } else if (maxStock <= 0) {
+            // Ini seharusnya sudah dicegah di handleScannedBarcode, tapi untuk jaga-jaga
+            quantity = 1;
+        } else {
             hideBarcodeFeedback();
         }
 
@@ -688,7 +900,10 @@ $lastSale = consume_last_sale_summary();
         const ul = document.createElement('ul');
         matches.forEach((product, index) => {
             const li = document.createElement('li');
-            const stockNote = product.stock_available > 0 ? '' : ' (stok habis)';
+            let stockNote = '';
+            if (product.stock_available <= 0) {
+                stockNote = ' (stok habis)';
+            }
             li.textContent = product.name + (product.barcode ? ` (${product.barcode})` : '') + stockNote;
             if (product.stock_available <= 0) {
                 li.classList.add('muted');
@@ -761,7 +976,7 @@ $lastSale = consume_last_sale_summary();
         barcodeInput.addEventListener('blur', (event) => {
             if (isInteractingWithSuggestions) {
                 // Keep the input focus alive while user is selecting a suggestion
-                requestAnimationFrame(() => barcodeInput.focus());
+                requestAnimationFrame(() => focusBarcodeField({ force: true }));
                 return;
             }
             // Check if the focus is moving to an element within the suggestions container
@@ -848,7 +1063,10 @@ $lastSale = consume_last_sale_summary();
             }
         }
 
-        if (!Number.isFinite(product.stock_available) || product.stock_available <= 0) {
+        const currentStock = Number(product.stock_available ?? 0);
+        
+        // Cek jika stok habis
+        if (currentStock <= 0) {
             showBarcodeFeedback(`Stok "${product.name}" habis, tidak bisa ditambahkan ke transaksi.`);
             return;
         }
@@ -857,8 +1075,7 @@ $lastSale = consume_last_sale_summary();
         if (remainingStock <= 0) {
             showBarcodeFeedback(`Stok "${product.name}" tersisa 0 untuk transaksi ini. Kurangi atau hapus barang sebelum menambah lagi.`);
             if (barcodeInput) {
-                barcodeInput.value = '';
-                barcodeInput.focus();
+                clearBarcodeFieldForNextScan();
             }
             return;
         }
@@ -873,30 +1090,22 @@ $lastSale = consume_last_sale_summary();
             clampRowQuantityToStock(targetRow);
         } else if (targetRow) {
             const quantityInput = targetRow.querySelector('.quantity-input');
-            const priceInput = targetRow.querySelector('.price-input');
             const nextQuantity = (parseFloat(quantityInput.value) || 0) + 1;
             const maxStock = Number(product.stock_available ?? 0);
             if (Number.isFinite(maxStock) && maxStock > 0 && nextQuantity > maxStock) {
                 showBarcodeFeedback(`Stok "${product.name}" tersisa ${maxStock}. Tidak bisa menambahkan lebih banyak.`);
                 if (barcodeInput) {
-                    barcodeInput.value = '';
-                    barcodeInput.focus();
+                    clearBarcodeFieldForNextScan();
                 }
                 return;
             }
             quantityInput.value = nextQuantity;
-            if ((!priceInput.value || priceInput.value === '0') && product.price) {
-                priceInput.value = product.price;
-            }
             updateRow(targetRow);
             clampRowQuantityToStock(targetRow);
         }
 
         flashRow(targetRow);
-        if (barcodeInput) {
-            barcodeInput.value = '';
-            barcodeInput.focus();
-        }
+        clearBarcodeFieldForNextScan();
     };
 
     ensureEmptyState();
@@ -935,19 +1144,22 @@ $lastSale = consume_last_sale_summary();
             barcodeInput.value = '';
             hideBarcodeFeedback();
             hideSuggestions();
-            barcodeInput.focus();
+            focusBarcodeField({ force: true });
         });
     }
 
     document.addEventListener('keydown', (event) => {
         if (event.key === 'F9' && barcodeInput) {
             event.preventDefault();
-            barcodeInput.focus();
+            focusBarcodeField({ force: true });
         }
     });
 
     document.addEventListener('barcode-scanned', (event) => {
         if (event.detail?.targetId === 'barcode-input') {
+            if (isCoarsePointerDevice() && barcodeInput) {
+                barcodeInput.blur();
+            }
             handleScannedBarcode(event.detail.value);
         }
     });
@@ -1151,6 +1363,247 @@ $lastSale = consume_last_sale_summary();
                 if (action && saleId) {
                     handleBackgroundPrint(action, saleId);
                 }
+            }
+        });
+    }
+
+    // Tab switching for Barang / Digital
+    const posTabs = document.querySelectorAll('.pos-tab');
+    const tabBarang = document.getElementById('tab-barang');
+    const tabDigital = document.getElementById('tab-digital');
+
+    const digitalTypeSelect = document.getElementById('digital_type');
+    const digitalTujuanInput = document.getElementById('digital_tujuan');
+    const digitalModalInput = document.getElementById('digital_modal');
+    const digitalJualInput = document.getElementById('digital_jual');
+    const digitalLayananInput = document.getElementById('digital_layanan');
+    const addDigitalBtn = document.getElementById('add-digital-btn');
+
+    const digitalLabels = {
+        'dana': 'Top Up DANA',
+        'ovo': 'Top Up OVO',
+        'gopay': 'Top Up GoPay',
+        'shopeepay': 'Top Up ShopeePay',
+        'linkaja': 'Top Up LinkAja',
+        'imax': 'Top Up i.saku / Maxim',
+        'transfer_bca': 'Transfer BCA',
+        'transfer_bni': 'Transfer BNI',
+        'transfer_mandiri': 'Transfer Mandiri',
+        'transfer_bri': 'Transfer BRI',
+        'transfer_btpn': 'Transfer BTPN / Jenius',
+        'transfer_cimb': 'Transfer CIMB Niaga',
+        'transfer_permata': 'Transfer Permata',
+        'transfer_danamon': 'Transfer Danamon',
+        'transfer_ocbc': 'Transfer OCBC NISP',
+        'transfer_banklain': 'Transfer Bank Lain',
+        'pulsa': 'Pulsa Elektrik',
+        'token_listrik': 'Token Listrik',
+        'paket_data': 'Paket Data',
+        'jasa_antar': 'Jasa Antar',
+        'jasa_cetak': 'Jasa Cetak',
+        'jasa_lain': 'Jasa Lainnya'
+    };
+
+    const customBankGroup = document.getElementById('custom-bank-group');
+    const customBankInput = document.getElementById('digital_custom_bank');
+
+    posTabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            posTabs.forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            const tabName = tab.dataset.tab;
+            if (tabName === 'digital') {
+                tabBarang.hidden = true;
+                tabDigital.hidden = false;
+            } else {
+                tabBarang.hidden = false;
+                tabDigital.hidden = true;
+            }
+        });
+    });
+
+    if (digitalTypeSelect) {
+        digitalTypeSelect.addEventListener('change', () => {
+            if (customBankGroup) {
+                customBankGroup.hidden = digitalTypeSelect.value !== 'transfer_banklain';
+            }
+        });
+    }
+
+    if (digitalTujuanInput) {
+        digitalTujuanInput.addEventListener('input', (e) => {
+            e.target.value = e.target.value.replace(/\D/g, '');
+        });
+    }
+
+    const formatCurrencyInput = (input) => {
+        if (!input) return;
+        input.addEventListener('input', (e) => {
+            let val = e.target.value.replace(/\D/g, '');
+            if (val === '') {
+                e.target.value = '';
+                return;
+            }
+            let formatted = new Intl.NumberFormat('id-ID').format(val);
+            e.target.value = 'Rp ' + formatted;
+        });
+    };
+
+    const parseCurrencyValue = (val) => {
+        if (!val) return 0;
+        return parseFloat(val.toString().replace(/[^\d]/g, '')) || 0;
+    };
+
+    if (digitalModalInput) {
+        formatCurrencyInput(digitalModalInput);
+    }
+
+    if (digitalJualInput) {
+        formatCurrencyInput(digitalJualInput);
+    }
+
+    if (digitalLayananInput) {
+        formatCurrencyInput(digitalLayananInput);
+    }
+
+    if (cashPaidInput) {
+        formatCurrencyInput(cashPaidInput);
+    }
+
+    if (pointsUsedInput) {
+        formatCurrencyInput(pointsUsedInput);
+    }
+
+    if (addDigitalBtn) {
+        addDigitalBtn.addEventListener('click', () => {
+            const type = digitalTypeSelect.value;
+            const tujuan = digitalTujuanInput.value.trim();
+            const modal = parseCurrencyValue(digitalModalInput.value);
+            const jual = parseCurrencyValue(digitalJualInput.value);
+            const layanan = digitalLayananInput.value.trim();
+            const customBank = customBankInput ? customBankInput.value.trim() : '';
+
+            if (!type) {
+                alert('Pilih jenis layanan digital terlebih dahulu.');
+                digitalTypeSelect.focus();
+                return;
+            }
+            if (type === 'transfer_banklain' && !customBank) {
+                alert('Masukkan nama bank.');
+                customBankInput.focus();
+                return;
+            }
+            if (!tujuan) {
+                alert('Masukkan no tujuan / rekening tujuan.');
+                digitalTujuanInput.focus();
+                return;
+            }
+            if (jual <= 0) {
+                alert('Masukkan harga jual.');
+                digitalJualInput.focus();
+                return;
+            }
+
+            // Clear empty state first
+            const emptyRow = itemsTable.querySelector('.empty-row');
+            if (emptyRow) {
+                emptyRow.remove();
+            }
+            
+            let label = digitalLabels[type] || type;
+            if (type === 'transfer_banklain' && customBank) {
+                label = 'Transfer ' + customBank;
+            }
+            const displayName = layanan ? `${label} - ${layanan}` : label;
+            const modalText = modal > 0 ? ` (Modal: Rp${modal.toLocaleString('id-ID')})` : '';
+
+            // Clone template
+            const fragment = itemRowTemplate.content.cloneNode(true);
+            const row = fragment.querySelector('.sale-item-row');
+            
+            // Populate hidden inputs for digital item
+            row.querySelector('.product-id-input').value = '0';
+            row.querySelector('.is-digital-item-input').value = '1';
+            row.querySelector('.digital-type-item-input').value = type;
+            row.querySelector('.digital-tujuan-item-input').value = tujuan;
+            row.querySelector('.digital-modal-item-input').value = modal;
+            row.querySelector('.digital-layanan-item-input').value = customBank || layanan;
+
+            row.dataset.subtotal = jual.toString();
+            
+            // Set product name
+            const nameElement = row.querySelector('.product-name');
+            if (nameElement) {
+                nameElement.textContent = displayName;
+            }
+            
+            // Set barcode/tujuan
+            const barcodeElement = row.querySelector('.product-barcode');
+            if (barcodeElement) {
+                barcodeElement.textContent = tujuan + modalText;
+            }
+            
+            // Set price
+            const priceInput = row.querySelector('.price-input');
+            if (priceInput) {
+                const formattedPrice = new Intl.NumberFormat('id-ID').format(jual);
+                priceInput.value = 'Rp ' + formattedPrice;
+            }
+            
+            // Set quantity
+            const quantityInput = row.querySelector('.quantity-input');
+            if (quantityInput) {
+                quantityInput.value = 1;
+            }
+            
+            // Set discount
+            const discountInput = row.querySelector('.discount-input');
+            if (discountInput) {
+                discountInput.value = 'Rp 0';
+            }
+
+            // Set subtotal display
+            const subtotalCell = row.querySelector('.subtotal-cell');
+            if (subtotalCell) {
+                subtotalCell.textContent = currencyFormatter.format(jual);
+            }
+            
+            // Bind events (standard events from bindRowEvents)
+            bindRowEvents(row);
+            
+            // Append to table
+            itemsTable.appendChild(row);
+            
+            // Update total display
+            updateTotal();
+            
+            // Flash animation
+            row.classList.add('table-row-flash');
+            setTimeout(() => row.classList.remove('table-row-flash'), 600);
+
+            // Clear inputs
+            digitalTypeSelect.value = '';
+            digitalTujuanInput.value = '';
+            digitalModalInput.value = '';
+            digitalJualInput.value = '';
+            digitalLayananInput.value = '';
+            if (customBankInput) {
+                customBankInput.value = '';
+                customBankGroup.hidden = true;
+            }
+        });
+    }
+
+    // Override form submit to handle digital products
+    const transactionForm = document.getElementById('transaction-form');
+    if (transactionForm) {
+        transactionForm.addEventListener('submit', (e) => {
+            // Check for items in the table
+            const allRows = itemsTable.querySelectorAll('.sale-item-row');
+            if (allRows.length === 0) {
+                e.preventDefault();
+                alert('Tambahkan minimal satu barang.');
+                return;
             }
         });
     }

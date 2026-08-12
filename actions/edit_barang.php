@@ -2,7 +2,7 @@
 
 require_once __DIR__ . '/../config/auth.php';
 require_once __DIR__ . '/../includes/fungsi.php';
-require_once __DIR__ . '/../includes/stock_utils.php';
+require_once __DIR__ . '/../includes/activity_logger.php';
 
 require_role(ROLE_KASIR);
 guard_post();
@@ -15,6 +15,7 @@ if (!$id) {
 
 $pdo = get_db_connection();
 ensure_product_image_support($pdo);
+$supportsProductImage = db_column_exists($pdo, 'products', 'image_path');
 $user = current_user();
 $rawBarcode = isset($_POST['barcode']) ? trim((string) $_POST['barcode']) : '';
 $barcode = $rawBarcode === '' ? null : $rawBarcode;
@@ -34,30 +35,14 @@ $data = [
     ':points_reward' => (int) ($_POST['points_reward'] ?? 0),
 ];
 
-$conversionEnabled = ($_POST['conversion_enabled'] ?? '0') === '1';
-$conversionParentId = $conversionEnabled ? (int) ($_POST['conversion_parent_id'] ?? 0) : 0;
-$conversionChildQty = $conversionEnabled ? (float) ($_POST['conversion_child_qty'] ?? 0) : 0.0;
-$conversionAutoBreak = $conversionEnabled ? (($_POST['conversion_auto_break'] ?? '0') === '1') : false;
+$tierMinQtys = $_POST['tier_min_qty'] ?? [];
+$tierPrices = $_POST['tier_price'] ?? [];
 
 if ($data[':name'] === '') {
     redirect_with_message('/index.php?page=barang&edit=' . $id, 'Nama wajib diisi.', 'error');
 }
 
-if ($conversionEnabled) {
-    if ($conversionParentId && $conversionParentId === $id) {
-        redirect_with_message('/index.php?page=barang&edit=' . $id, 'Barang sumber tidak boleh sama dengan barang saat ini.', 'error');
-    }
-
-    if (!$conversionParentId) {
-        redirect_with_message('/index.php?page=barang&edit=' . $id, 'Pilih barang sumber untuk konversi stok.', 'error');
-    }
-
-    if ($conversionChildQty <= 0) {
-        redirect_with_message('/index.php?page=barang&edit=' . $id, 'Jumlah konversi harus lebih dari 0.', 'error');
-    }
-}
-
-$stmtCurrent = $pdo->prepare('SELECT image_path FROM products WHERE id = :id LIMIT 1');
+$stmtCurrent = $pdo->prepare(($supportsProductImage ? 'SELECT image_path' : 'SELECT id') . ' FROM products WHERE id = :id LIMIT 1');
 $stmtCurrent->execute([':id' => $id]);
 $currentProduct = $stmtCurrent->fetch();
 
@@ -65,12 +50,16 @@ if (!$currentProduct) {
     redirect_with_message('/index.php?page=barang', 'Barang tidak ditemukan.', 'error');
 }
 
-$previousImage = $currentProduct['image_path'] ?? null;
+$previousImage = $supportsProductImage ? ($currentProduct['image_path'] ?? null) : null;
 $newImagePath = null;
 $imagePath = $previousImage;
 $removeImageRequested = ($_POST['remove_image'] ?? '0') === '1';
 
 if (!empty($_FILES['image']) && ($_FILES['image']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE) {
+    if (!$supportsProductImage) {
+        redirect_with_message('/index.php?page=barang&edit=' . $id, 'Database server belum memiliki kolom foto barang. Jalankan update struktur database sebelum mengunggah foto.', 'error');
+    }
+
     if (($_FILES['image']['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
         redirect_with_message('/index.php?page=barang&edit=' . $id, 'Gagal mengunggah foto barang.', 'error');
     }
@@ -92,44 +81,75 @@ if ($removeImageRequested) {
     $imagePath = null;
 }
 
-$data[':image_path'] = $imagePath;
+if ($supportsProductImage) {
+    $data[':image_path'] = $imagePath;
+}
 
 try {
+    ensure_tiered_prices_schema($pdo);
+    $supportsTieredPrices = db_table_exists($pdo, 'tiered_prices');
+
     $pdo->beginTransaction();
+
+    $setParts = [
+        'barcode = :barcode',
+        'name = :name',
+        'category_id = :category_id',
+        'unit = :unit',
+        'stock_minimum = :stock_minimum',
+        'description = :description',
+        'points_reward = :points_reward',
+        'updated_at = NOW()',
+    ];
+    if ($supportsProductImage) {
+        array_splice($setParts, 6, 0, 'image_path = :image_path');
+    }
 
     $stmt = $pdo->prepare("
         UPDATE products
-        SET barcode = :barcode,
-            name = :name,
-            category_id = :category_id,
-            unit = :unit,
-            stock_minimum = :stock_minimum,
-            description = :description,
-            image_path = :image_path,
-            points_reward = :points_reward,
-            updated_at = NOW()
+        SET " . implode(",\n            ", $setParts) . "
         WHERE id = :id
     ");
     $stmt->execute($data);
 
-    if ($conversionEnabled) {
-        upsert_product_conversion(
-            $pdo,
-            $id,
-            $conversionParentId ?: null,
-            $conversionChildQty ?: null,
-            $conversionAutoBreak,
-            $user['id'] ?? null
-        );
-    } else {
-        upsert_product_conversion(
-            $pdo,
-            $id,
-            null,
-            null,
-            false,
-            $user['id'] ?? null
-        );
+    // Simpan ulang tiered prices
+    try {
+        $pdo->prepare("DELETE FROM tiered_prices WHERE product_id = :id")->execute([':id' => $id]);
+    } catch (Throwable $e) {
+        // Ignore jika tabel belum ada
+    }
+
+    if (is_array($tierMinQtys) && is_array($tierPrices)) {
+        $tiers = [];
+        $count = min(count($tierMinQtys), count($tierPrices));
+        for ($i = 0; $i < $count; $i++) {
+            $minQty = (int) ($tierMinQtys[$i] ?? 0);
+            $price = (float) ($tierPrices[$i] ?? 0);
+            if ($minQty <= 0 || $price <= 0) {
+                continue;
+            }
+            if ($minQty < 2) {
+                continue;
+            }
+            $tiers[$minQty] = $price;
+        }
+
+        if (!empty($tiers) && $supportsTieredPrices) {
+            ksort($tiers);
+            $insertTier = $pdo->prepare("
+                INSERT INTO tiered_prices (product_id, min_qty, price, created_at, updated_at)
+                VALUES (:product_id, :min_qty, :price, NOW(), NOW())
+            ");
+            foreach ($tiers as $minQty => $price) {
+                $insertTier->execute([
+                    ':product_id' => $id,
+                    ':min_qty' => (int) $minQty,
+                    ':price' => (float) $price,
+                ]);
+            }
+        } elseif (!empty($tiers)) {
+            error_log('Harga grosir tidak disimpan karena tabel tiered_prices belum tersedia.');
+        }
     }
 
     $pdo->commit();
@@ -142,22 +162,25 @@ try {
         remove_product_image($previousImage);
     }
 
-    inventory_log('product_updated', [
-        'product_id' => $id,
-        'barcode' => $data[':barcode'],
-        'name' => $data[':name'],
-        'category_id' => $data[':category_id'],
-        'unit' => $data[':unit'],
-        'stock_minimum' => $data[':stock_minimum'],
-        'points_reward' => $data[':points_reward'],
-        'conversion_enabled' => $conversionEnabled ? 1 : 0,
-        'conversion_parent_id' => $conversionParentId ?: null,
-        'conversion_child_qty' => $conversionChildQty ?: null,
-        'conversion_auto_break' => $conversionAutoBreak ? 1 : 0,
-        'user_id' => $user['id'] ?? null,
-    ]);
+    try {
+        inventory_log('product_updated', [
+            'product_id' => $id,
+            'barcode' => $data[':barcode'],
+            'name' => $data[':name'],
+            'category_id' => $data[':category_id'],
+            'unit' => $data[':unit'],
+            'stock_minimum' => $data[':stock_minimum'],
+            'points_reward' => $data[':points_reward'],
+            'user_id' => $user['id'] ?? null,
+        ]);
+    } catch (Throwable $logError) {
+        error_log('Gagal menulis log product_updated: ' . $logError->getMessage());
+    }
 } catch (Throwable $e) {
-    $pdo->rollBack();
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
+    error_log('Gagal memperbarui barang: ' . $e->getMessage());
     if ($newImagePath) {
         remove_product_image($newImagePath);
     }

@@ -1,11 +1,5 @@
 <?php
 
-require_once __DIR__ . '/../config/setup_state.php';
-if (setup_requires_wizard() && !setup_is_setup_request()) {
-    header('Location: ' . setup_build_url());
-    exit;
-}
-
 require_once __DIR__ . '/../config/auth.php';
 require_once __DIR__ . '/../includes/fungsi.php';
 require_once __DIR__ . '/../includes/cash_drawer.php';
@@ -44,7 +38,7 @@ if ($rememberMe) {
     $selector = bin2hex(random_bytes(16));
     $validator = bin2hex(random_bytes(32));
     $hashedValidator = hash('sha256', $validator);
-    $expiresAt = date('Y-m-d H:i:s', time() + 60 * 60 * 24 * 30); // 30 hari
+    $expiresAt = date('Y-m-d H:i:s', time() + 60 * 60 * 24 * 365); // 1 tahun
 
     $stmt = $pdo->prepare('INSERT INTO auth_tokens (selector, hashed_validator, user_id, expires_at) VALUES (:selector, :hashed_validator, :user_id, :expires_at)');
     $stmt->execute([

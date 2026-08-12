@@ -1,5 +1,27 @@
-config/local_config.php
-storage/logs/
-storage/products/
-.env
+# Dependencies
 node_modules/
+
+# Proyek Android (repo terpisah: kasir-android)
+apk/
+base.apk
+
+# Data aplikasi & backup
+storage/
+backup/
+*.sql
+*.session.sql
+
+# Hasil decompile APK
+printer bluetooth/
+
+# File sementara
+nul
+*.log
+
+# IDE & tool agent
+.vscode/
+.idea/
+.agents/
+.claude/
+.qwen/
+skills-lock.json

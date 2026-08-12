@@ -20,6 +20,7 @@ $navigation = [
         'children' => [
             ['label' => 'Tambah Barang', 'page' => 'barang'],
             ['label' => 'Daftar Barang', 'page' => 'barang_list'],
+            ['label' => 'Update Stok Cepat', 'page' => 'stok_cepat', 'hidden_for' => [ROLE_KASIR]],
             ['label' => 'Kategori', 'page' => 'kategori'],
             ['label' => 'Stok Masuk', 'page' => 'stok_masuk'],
             ['label' => 'Penyesuaian Stok', 'page' => 'stok_penyesuaian'],
@@ -43,6 +44,7 @@ $navigation = [
         'children' => [
             ['label' => 'Notifikasi', 'page' => 'notifikasi'],
             ['label' => 'Pengaturan Toko', 'page' => 'toko', 'hidden_for' => [ROLE_KASIR]],
+            ['label' => 'Log Aplikasi', 'page' => 'log_viewer', 'hidden_for' => [ROLE_KASIR]],
             ['label' => 'Pengguna', 'page' => 'user', 'hidden_for' => [ROLE_KASIR]],
         ],
     ],

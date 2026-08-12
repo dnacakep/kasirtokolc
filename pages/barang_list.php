@@ -12,6 +12,10 @@ $pdo = get_db_connection();
 $searchTerm = trim($_GET['search'] ?? '');
 $categoryFilter = $_GET['category'] ?? '';
 $statusFilter = $_GET['status'] ?? '';
+$allowedPerPage = [12, 24, 48, 96];
+$requestedPerPage = (int) ($_GET['per_page'] ?? 24);
+$perPage = in_array($requestedPerPage, $allowedPerPage, true) ? $requestedPerPage : 24;
+$currentPage = max(1, (int) ($_GET['p'] ?? 1));
 
 $conditions = [];
 $params = [];
@@ -32,28 +36,75 @@ if ($statusFilter === 'active') {
     $conditions[] = "p.is_active = 0";
 }
 
-$query = "
-    SELECT p.*, c.name AS category_name, COALESCE(SUM(b.stock_remaining), 0) AS stock_total
+$fromClause = "
     FROM products p
     LEFT JOIN categories c ON c.id = p.category_id
     LEFT JOIN product_batches b ON b.product_id = p.id
 ";
 
+$whereClause = '';
 if ($conditions) {
-    $query .= ' WHERE ' . implode(' AND ', $conditions);
+    $whereClause = ' WHERE ' . implode(' AND ', $conditions);
 }
 
-$query .= "
+$countQuery = "
+    SELECT COUNT(*) FROM (
+        SELECT p.id
+        $fromClause
+        $whereClause
+        GROUP BY p.id
+    ) AS product_count
+";
+$stmtCount = $pdo->prepare($countQuery);
+$stmtCount->execute($params);
+$totalProducts = (int) $stmtCount->fetchColumn();
+$totalPages = max(1, (int) ceil($totalProducts / $perPage));
+$currentPage = min($currentPage, $totalPages);
+$offset = ($currentPage - 1) * $perPage;
+
+$query = "
+    SELECT p.*, c.name AS category_name, COALESCE(SUM(b.stock_remaining), 0) AS stock_total
+    $fromClause
+    $whereClause
     GROUP BY p.id, c.name
     ORDER BY p.name ASC
+    LIMIT :limit OFFSET :offset
 ";
 
 $stmtProducts = $pdo->prepare($query);
-$stmtProducts->execute($params);
+$stmtProducts->bindValue(':limit', $perPage, PDO::PARAM_INT);
+$stmtProducts->bindValue(':offset', $offset, PDO::PARAM_INT);
+foreach ($params as $key => $value) {
+    $stmtProducts->bindValue($key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+}
+$stmtProducts->execute();
 $products = $stmtProducts->fetchAll();
 
 $categories = $pdo->query("SELECT * FROM categories ORDER BY name ASC")->fetchAll();
 $flashMessage = consume_flash_message();
+$rangeStart = $totalProducts > 0 ? ($offset + 1) : 0;
+$rangeEnd = min($offset + $perPage, $totalProducts);
+
+$baseQueryParams = [
+    'page' => 'barang_list',
+    'per_page' => $perPage,
+];
+if ($searchTerm !== '') {
+    $baseQueryParams['search'] = $searchTerm;
+}
+if ($categoryFilter !== '' && $categoryFilter !== 'all') {
+    $baseQueryParams['category'] = $categoryFilter;
+}
+if ($statusFilter !== '') {
+    $baseQueryParams['status'] = $statusFilter;
+}
+
+function build_barang_list_url(array $baseQueryParams, int $page): string
+{
+    $query = $baseQueryParams;
+    $query['p'] = $page;
+    return BASE_URL . '/index.php?' . http_build_query($query);
+}
 
 ?>
 
@@ -91,7 +142,16 @@ $flashMessage = consume_flash_message();
                     <option value="inactive" <?= $statusFilter === 'inactive' ? 'selected' : '' ?>>Nonaktif</option>
                 </select>
             </div>
+            <div class="form-group">
+                <label for="filter_per_page">Tampilkan per Halaman</label>
+                <select id="filter_per_page" name="per_page">
+                    <?php foreach ($allowedPerPage as $option): ?>
+                        <option value="<?= $option ?>" <?= $perPage === $option ? 'selected' : '' ?>><?= $option ?> barang</option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
         </div>
+        <input type="hidden" name="p" value="1">
         <div class="form-actions" style="display:flex; gap:0.75rem; flex-wrap:wrap;">
             <button class="button" type="submit">Terapkan Filter</button>
             <a class="button secondary" href="<?= BASE_URL ?>/index.php?page=barang_list">Reset</a>
@@ -127,6 +187,21 @@ $flashMessage = consume_flash_message();
             <?= sanitize($flashMessage['text']) ?>
         </div>
     <?php endif; ?>
+
+    <div class="list-toolbar">
+        <p class="muted">Menampilkan <?= number_format($rangeStart, 0, ',', '.') ?>-<?= number_format($rangeEnd, 0, ',', '.') ?> dari <?= number_format($totalProducts, 0, ',', '.') ?> barang.</p>
+        <?php if ($totalPages > 1): ?>
+            <div class="pagination">
+                <?php if ($currentPage > 1): ?>
+                    <a class="button secondary" href="<?= sanitize(build_barang_list_url($baseQueryParams, $currentPage - 1)) ?>">Sebelumnya</a>
+                <?php endif; ?>
+                <span class="pagination__status">Halaman <?= $currentPage ?> / <?= $totalPages ?></span>
+                <?php if ($currentPage < $totalPages): ?>
+                    <a class="button secondary" href="<?= sanitize(build_barang_list_url($baseQueryParams, $currentPage + 1)) ?>">Berikutnya</a>
+                <?php endif; ?>
+            </div>
+        <?php endif; ?>
+    </div>
 
     <?php if (!$products): ?>
         <p class="muted" style="margin-top:1rem;">Belum ada barang yang cocok dengan filter.</p>
@@ -230,10 +305,47 @@ $flashMessage = consume_flash_message();
                 </form>
             <?php endforeach; ?>
         </div>
+        <?php if ($totalPages > 1): ?>
+            <div class="pagination pagination--bottom">
+                <?php if ($currentPage > 1): ?>
+                    <a class="button secondary" href="<?= sanitize(build_barang_list_url($baseQueryParams, $currentPage - 1)) ?>">Sebelumnya</a>
+                <?php endif; ?>
+                <span class="pagination__status">Halaman <?= $currentPage ?> / <?= $totalPages ?></span>
+                <?php if ($currentPage < $totalPages): ?>
+                    <a class="button secondary" href="<?= sanitize(build_barang_list_url($baseQueryParams, $currentPage + 1)) ?>">Berikutnya</a>
+                <?php endif; ?>
+            </div>
+        <?php endif; ?>
     <?php endif; ?>
 </section>
 
 <style>
+.list-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 1rem;
+    flex-wrap: wrap;
+}
+
+.pagination {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.pagination--bottom {
+    margin-top: 1rem;
+    justify-content: flex-end;
+}
+
+.pagination__status {
+    font-size: 0.92rem;
+    color: #666;
+}
+
 .product-card-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));

@@ -35,6 +35,36 @@ $stmtAdjustments = $pdo->prepare($adjustmentsQuery);
 $stmtAdjustments->execute();
 $adjustments = $stmtAdjustments->fetchAll();
 
+function adjustment_type_label(?string $type): string
+{
+    $type = strtolower(trim((string) $type));
+
+    switch ($type) {
+        case 'initial':
+            return 'Stok Awal';
+        case 'purchase':
+            return 'Stok Masuk';
+        case 'sale':
+            return 'Penjualan';
+        case 'return':
+            return 'Retur';
+        case 'expired':
+            return 'Kadaluarsa';
+        case 'adjust':
+            return 'Penyesuaian';
+        case 'manual':
+            return 'Update Manual';
+        case 'transfer':
+            return 'Transfer';
+        case 'convert_in':
+            return 'Konversi Masuk';
+        case 'convert_out':
+            return 'Konversi Keluar';
+        default:
+            return $type !== '' ? strtoupper($type) : '-';
+    }
+}
+
 ?>
 
 <section class="card">
@@ -160,7 +190,7 @@ $adjustments = $stmtAdjustments->fetchAll();
         <?php foreach ($adjustments as $adjustment): ?>
             <tr>
                 <td><?= sanitize($adjustment['product_name']) ?></td>
-                <td><?= sanitize($adjustment['adjustment_type']) ?></td>
+                <td><?= sanitize(adjustment_type_label($adjustment['adjustment_type'] ?? null)) ?></td>
                 <td><?= (int) $adjustment['quantity'] ?></td>
                 <td><?= sanitize($adjustment['reason']) ?></td>
                 <td><?= sanitize($adjustment['adjusted_by_username'] ?? 'N/A') ?></td>
